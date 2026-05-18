@@ -565,6 +565,26 @@ go build -o ecs-controller ./cmd/ecs-controller
 ghcr.io/sunser/ecs-controller
 ```
 
+镜像使用 Docker Buildx 构建，当前发布以下架构：
+
+| 平台 | 常见设备 |
+| --- | --- |
+| `linux/amd64` | 常见 x86_64 云服务器、PC、NAS |
+| `linux/arm64` | ARM64 云服务器、Apple Silicon、部分 NAS 和开发板 |
+| `linux/arm/v7` | 32 位 ARMv7 设备 |
+
+使用同一个镜像 tag 即可，Docker 会按当前机器架构自动选择对应镜像。例如：
+
+```bash
+docker pull ghcr.io/sunser/ecs-controller:latest
+```
+
+如果需要在本地手工构建多架构镜像，可以使用：
+
+```bash
+docker buildx build --platform linux/amd64,linux/arm64,linux/arm/v7 -t ghcr.io/sunser/ecs-controller:local .
+```
+
 推送到 `main` 分支后会生成：
 
 ```text
