@@ -141,7 +141,6 @@ server:
   refresh_interval: "5m"
   request_timeout: "20s"
   password: "${EC_PASSWORD}"
-  state_path: "/data/state.json"
 
 discovery:
   region_refresh_interval: "24h"

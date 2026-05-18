@@ -17,6 +17,7 @@ import (
 
 const (
 	configPath = "/data/settings.yaml"
+	statePath  = "/data/state.json"
 	webDir     = "/app/web"
 )
 
@@ -31,9 +32,9 @@ func main() {
 	}
 	applog.SetLevel(cfg.Logging.Level)
 
-	state, err := monitor.OpenStateStore(cfg.Server.StatePath)
+	state, err := monitor.OpenStateStore(statePath)
 	if err != nil {
-		applog.Error("state", "load failed", map[string]string{"path": cfg.Server.StatePath, "error": err.Error()})
+		applog.Error("state", "load failed", map[string]string{"path": statePath, "error": err.Error()})
 		os.Exit(1)
 	}
 

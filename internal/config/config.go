@@ -29,7 +29,6 @@ type ServerConfig struct {
 	RefreshInterval time.Duration
 	RequestTimeout  time.Duration
 	Password        string
-	StatePath       string
 }
 
 type DiscoveryConfig struct {
@@ -203,7 +202,6 @@ func defaultConfig() Config {
 			Listen:          ":8080",
 			RefreshInterval: 5 * time.Minute,
 			RequestTimeout:  20 * time.Second,
-			StatePath:       "/data/state.json",
 		},
 		Discovery: DiscoveryConfig{
 			RegionRefreshInterval: 24 * time.Hour,
@@ -242,8 +240,6 @@ func applyServer(cfg *ServerConfig, key, value string) error {
 		cfg.RequestTimeout = duration
 	case "password":
 		cfg.Password = scalar(value)
-	case "state_path":
-		cfg.StatePath = scalar(value)
 	default:
 		return fmt.Errorf("未知 server 字段 %q", key)
 	}

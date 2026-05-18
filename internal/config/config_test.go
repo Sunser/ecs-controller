@@ -45,9 +45,6 @@ accounts:
 	if cfg.Server.RefreshInterval != 5*time.Minute {
 		t.Fatalf("refresh interval = %s, want 5m", cfg.Server.RefreshInterval)
 	}
-	if cfg.Server.StatePath != "/data/state.json" {
-		t.Fatalf("state path = %q, want /data/state.json", cfg.Server.StatePath)
-	}
 	if cfg.KeepAlive.TrafficPolicy != "manual_only_when_exceeded" {
 		t.Fatalf("traffic policy = %q", cfg.KeepAlive.TrafficPolicy)
 	}
@@ -86,6 +83,25 @@ accounts:
 	}
 	if len(cfg.Accounts[0].Regions) != 1 || cfg.Accounts[0].Regions[0] != "auto" {
 		t.Fatalf("regions = %#v, want [auto]", cfg.Accounts[0].Regions)
+	}
+}
+
+func TestLoadBytesRejectsLegacyStatePath(t *testing.T) {
+	_, err := config.LoadBytes([]byte(`
+server:
+  password: "secret"
+  state_path: "/data/state.json"
+accounts:
+  - name: "cn"
+    site: "china"
+    access_key_id: "ak"
+    access_key_secret: "sk"
+`))
+	if err == nil {
+		t.Fatal("LoadBytes() error = nil, want unknown state_path error")
+	}
+	if !strings.Contains(err.Error(), "state_path") {
+		t.Fatalf("LoadBytes() error = %v, want state_path", err)
 	}
 }
 

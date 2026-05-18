@@ -6,7 +6,6 @@ ARG TARGETARCH
 ARG TARGETVARIANT
 
 WORKDIR /src
-RUN apk add --no-cache ca-certificates tzdata
 
 COPY go.mod ./
 COPY cmd ./cmd
@@ -25,9 +24,9 @@ RUN set -eux; \
 
 FROM alpine:3.20
 
+RUN apk add --no-cache ca-certificates tzdata
+
 WORKDIR /app
-COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
-COPY --from=builder /usr/share/zoneinfo /usr/share/zoneinfo
 COPY --from=builder /out/ecs-controller ./ecs-controller
 COPY web ./web
 

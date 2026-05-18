@@ -45,7 +45,6 @@ func renderGlobalSettings(original string, cfg Config) string {
 	writeKeyValue(&builder, "refresh_interval", quote(formatDuration(cfg.Server.RefreshInterval.String())))
 	writeKeyValue(&builder, "request_timeout", quote(formatDuration(cfg.Server.RequestTimeout.String())))
 	writeKeyValue(&builder, "password", rawOrEnvPlaceholder(original, "server", "password", "EC_PASSWORD", cfg.Server.Password))
-	writeKeyValue(&builder, "state_path", rawOrQuoted(original, "server", "state_path", cfg.Server.StatePath))
 
 	builder.WriteString("\ndiscovery:\n")
 	writeKeyValue(&builder, "region_refresh_interval", quote(formatDuration(cfg.Discovery.RegionRefreshInterval.String())))

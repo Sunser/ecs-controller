@@ -22,7 +22,6 @@ server:
   refresh_interval: "5m"
   request_timeout: "20s"
   password: "${EC_PASSWORD}"
-  state_path: "/data/state.json"
 
 discovery:
   region_refresh_interval: "24h"
@@ -104,6 +103,9 @@ accounts:
 	}
 	if strings.Contains(text, "instance_refresh_interval") {
 		t.Fatalf("written config kept legacy instance_refresh_interval:\n%s", text)
+	}
+	if strings.Contains(text, "state_path") {
+		t.Fatalf("written config kept legacy state_path:\n%s", text)
 	}
 
 	reloaded, err := config.LoadFile(path)
