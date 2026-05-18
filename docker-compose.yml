@@ -1,0 +1,19 @@
+services:
+  ecs-controller:
+    build: .
+    container_name: ecs-controller
+    restart: unless-stopped
+    ports:
+      - "43210:8080"
+    env_file:
+      - .env
+    environment:
+      TZ: Asia/Shanghai
+    volumes:
+      - ecs-controller-data:/data
+    dns:
+      - 223.5.5.5
+      - 114.114.114.114
+
+volumes:
+  ecs-controller-data:

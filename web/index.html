@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ECS Controller</title>
+  <link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <h1>ECS Controller</h1>
+      <small>阿里云 ECS 流量与抢占式保活控制台</small>
+    </div>
+    <div class="top-actions">
+      <span class="muted" id="pageUpdated">页面刷新 -</span>
+      <span class="muted" id="dataUpdated">数据更新 -</span>
+      <label class="top-select hidden" id="autoRefreshControl">自动刷新<select id="autoRefreshInterval"><option value="10000">10 秒</option><option value="30000">30 秒</option><option value="60000">1 分钟</option><option value="300000">5 分钟</option></select></label>
+      <button class="ghost hidden" id="autoRefreshToggle">暂停自动刷新</button>
+      <button class="ghost hidden" id="logoutBtn">退出</button>
+    </div>
+  </header>
+
+  <section class="login" id="loginView">
+    <div class="login-box">
+      <h2>登录 ECS Controller</h2>
+      <p>输入配置文件中的 password。登录后才能查看实例、开关机、修改设置和查看运行日志。</p>
+      <label>登录密码<input id="passwordInput" type="password" autocomplete="current-password"></label>
+      <div class="button-row">
+        <button class="primary" id="unlockBtn">解锁</button>
+      </div>
+      <p class="error" id="loginError"></p>
+    </div>
+  </section>
+
+  <main class="hidden" id="appView">
+    <nav class="tabs">
+      <button class="tab active" data-tab="overview">概览</button>
+      <button class="tab" data-tab="instances">实例</button>
+      <button class="tab" data-tab="settings">设置</button>
+      <button class="tab" data-tab="logs">运行日志</button>
+    </nav>
+
+    <section id="overviewTab">
+      <div class="summary-grid">
+        <div class="metric"><span>实例数</span><strong id="metricInstances">0</strong></div>
+        <div class="metric green"><span>运行中</span><strong id="metricRunning">0</strong></div>
+        <div class="metric teal"><span>抢占式</span><strong id="metricSpot">0</strong></div>
+        <div class="metric amber"><span>流量超阈值</span><strong id="metricExceeded">0</strong></div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <h2>账号流量</h2>
+        </div>
+        <div class="status-line">
+          <span class="badge" id="policySummary">流量策略 -</span>
+          <span class="badge" id="targetSummary">保活目标 -</span>
+          <span class="badge" id="warningSummary">流量阈值 -</span>
+          <span class="badge" id="refreshSummary">后台检查 -</span>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>账号</th>
+                <th>分区流量</th>
+                <th>月额度</th>
+                <th>使用率</th>
+              </tr>
+            </thead>
+            <tbody id="accountRows"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="panel section-gap">
+        <div class="panel-head"><h2>实例列表</h2></div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>账号</th>
+                <th>实例</th>
+                <th>状态</th>
+                <th>公网 IP</th>
+                <th>本月流量</th>
+                <th>保活决策</th>
+              </tr>
+            </thead>
+            <tbody id="overviewRows"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section class="hidden" id="instancesTab">
+      <div class="panel">
+        <div class="panel-head">
+          <h2>实例管理</h2>
+          <span class="notice">手工关机会暂停该实例自动保活</span>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>账号</th>
+                <th>实例</th>
+                <th>地域</th>
+                <th>状态</th>
+                <th>IPv4 / IPv6</th>
+                <th>本月流量</th>
+                <th>规格</th>
+                <th>抢占式</th>
+                <th>最近操作</th>
+                <th>动作</th>
+              </tr>
+            </thead>
+            <tbody id="instanceRows"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section class="hidden" id="settingsTab">
+      <div class="settings-grid">
+        <div class="panel settings-card keepalive-settings">
+          <div class="panel-head"><h2>保活策略</h2></div>
+          <div class="form-grid">
+            <label>启用保活<select id="keepAliveEnabled"><option value="true">启用</option><option value="false">关闭</option></select></label>
+            <label>流量告警阈值<input id="warningPercent" type="number" min="1" step="1"></label>
+            <label class="wide-field">保活目标<select id="keepAliveTarget"><option value="disabled">关闭保活（disabled）</option><option value="all">保活所有实例（all）</option><option value="spot_only">保活抢占式实例（spot_only）</option><option value="include_list">只保活指定实例（include_list）</option></select></label>
+            <label class="wide-field">流量策略<select id="trafficPolicy"><option value="ignore_limit">忽略流量限制继续保活（ignore_limit）</option><option value="pause_when_exceeded">流量超阈值后暂停保活（pause_when_exceeded）</option><option value="manual_only_when_exceeded">流量超阈值后人工决策（manual_only_when_exceeded）</option></select></label>
+            <label class="wide-field">停机模式<select id="stopMode"><option value="StopCharging">节省停机（StopCharging）</option><option value="KeepCharging">普通停机（KeepCharging）</option></select></label>
+            <label class="wide-field">指定保活实例 ID<textarea id="includeIds" placeholder="每行一个实例 ID，例如 i-xxx"></textarea></label>
+          </div>
+        </div>
+        <div class="panel settings-card runtime-settings">
+          <div class="panel-head"><h2>全局配置</h2></div>
+          <div class="form-grid">
+            <label>后台检查间隔<input id="refreshInterval" placeholder="5m"></label>
+            <label>地域缓存时间<input id="regionRefreshInterval" placeholder="24h"></label>
+            <label>API 请求超时<input id="requestTimeout" placeholder="20s"></label>
+            <label>重复启动保护间隔<input id="startCooldown" placeholder="10m"></label>
+            <label>日志级别<select id="logLevel"><option value="info">常规日志（info）</option><option value="debug">调试日志（debug）</option><option value="warn">只看警告（warn）</option><option value="error">只看错误（error）</option></select></label>
+          </div>
+        </div>
+        <div class="panel settings-card notify-settings">
+          <div class="panel-head"><h2>企业微信通知</h2></div>
+          <div class="form-grid">
+            <label>启用通知<select id="notificationEnabled"><option value="false">关闭</option><option value="true">启用</option></select></label>
+            <div class="wide-field">
+              <div class="field-title">通知事件</div>
+              <div class="event-picker" id="notifyEvents"></div>
+            </div>
+          </div>
+        </div>
+        <div class="panel settings-card help-settings">
+          <div class="panel-head"><h2>当前配置说明</h2></div>
+          <div class="help-card" id="optionHelp"></div>
+        </div>
+        <div class="settings-actions">
+          <div class="save-row">
+            <button class="primary" id="saveSettingsBtn">保存设置</button>
+            <p class="error" id="settingsError"></p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="hidden" id="logsTab">
+      <div class="panel">
+        <div class="panel-head">
+          <h2>运行日志</h2>
+          <button id="refreshLogsBtn">刷新日志</button>
+        </div>
+        <div class="log-list" id="logRows"></div>
+      </div>
+    </section>
+  </main>
+
+  <script src="/assets/app.js"></script>
+</body>
+</html>
