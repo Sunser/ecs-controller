@@ -199,7 +199,7 @@ http://你的服务器IP:43210
 | `EC_WECHAT_CORPSECRET` | 启用通知时必填 | 空 | 企业微信自建应用 Secret。 |
 | `EC_WECHAT_AGENTID` | 启用通知时必填 | `0` | 企业微信自建应用 AgentId。 |
 | `EC_WECHAT_TOUSER` | 启用通知时必填 | 空 | 接收人。单人写 `user1`，多人写 `user1,user2`。 |
-| `EC_NOTIFY_EVENTS` | 否 | `auto_start,manual_start,manual_stop,manual_required,traffic_exceeded,error` | 通知事件列表，多个用逗号分隔。 |
+| `EC_NOTIFY_EVENTS` | 否 | `auto_start`<br>`manual_start`<br>`manual_stop`<br>`manual_required`<br>`traffic_exceeded`<br>`error` | 通知事件列表，多个用逗号分隔。 |
 
 通知使用企业微信自建应用文本消息，不使用群机器人 webhook。
 

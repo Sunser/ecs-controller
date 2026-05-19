@@ -83,6 +83,50 @@ func TestEffectiveStopModeUsesStopChargingForNonPrepaidInstances(t *testing.T) {
 	}
 }
 
+func TestManualStopNotificationFieldsOmitConfiguredFallbackDetails(t *testing.T) {
+	fields := manualStopNotificationFields("Huhu", "cn-hangzhou", InstanceSnapshot{
+		InstanceName:       "example",
+		InstanceChargeType: "PrePaid",
+	}, "i-123", "KeepCharging")
+
+	if fields["停机模式"] != "KeepCharging" {
+		t.Fatalf("stop mode = %q, want KeepCharging", fields["停机模式"])
+	}
+	if _, ok := fields["说明"]; ok {
+		t.Fatalf("manual stop notification should omit explanation: %#v", fields)
+	}
+	if _, ok := fields["配置停机模式"]; ok {
+		t.Fatalf("manual stop notification should omit configured mode: %#v", fields)
+	}
+}
+
+func TestDecisionReasonTextUsesChinese(t *testing.T) {
+	cases := map[string]string{
+		"account_traffic_unknown_manual_required":  "账号流量读取失败，需要人工决策",
+		"account_traffic_exceeded_manual_required": "流量已达到阈值，需要人工决策",
+	}
+
+	for reason, want := range cases {
+		if got := decisionReasonText(reason); got != want {
+			t.Fatalf("decisionReasonText(%q) = %q, want %q", reason, got, want)
+		}
+	}
+}
+
+func TestMaxTrafficScopeSelectsScopeName(t *testing.T) {
+	scope, ok := maxTrafficScope([]TrafficScopeSnapshot{
+		{Key: aliyun.CDTScopeMainland, Name: "中国内地", UsagePercent: 50},
+		{Key: aliyun.CDTScopeOverseas, Name: "非中国内地", UsagePercent: 70},
+	})
+
+	if !ok {
+		t.Fatal("maxTrafficScope() ok = false, want true")
+	}
+	if scope.Name != "非中国内地" || scope.UsagePercent != 70 {
+		t.Fatalf("max scope = %#v, want 非中国内地 70", scope)
+	}
+}
+
 func TestNotificationFieldsWithTimeAddsLocalTime(t *testing.T) {
 	location := time.FixedZone("CST", 8*60*60)
 	originalLocal := time.Local

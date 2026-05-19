@@ -116,7 +116,8 @@ func (s *Service) Refresh(ctx context.Context) error {
 		accountTraffic := s.loadAccountTraffic(ctx, client)
 		accountTrafficAvailable := accountTraffic.Source == "cdt"
 		accountScopes := trafficScopes(accountTraffic, account.MainlandTrafficLimit, account.OverseasTrafficLimit)
-		accountUsagePercent := maxTrafficScopeUsage(accountScopes)
+		maxScope, hasMaxScope := maxTrafficScope(accountScopes)
+		accountUsagePercent := maxScope.UsagePercent
 		accountSnapshot := AccountSnapshot{
 			AccountName:      account.Name,
 			AccountSite:      account.Site,
@@ -144,11 +145,15 @@ func (s *Service) Refresh(ctx context.Context) error {
 					"account": account.Name,
 					"usage":   fmt.Sprintf("%.2f%%", accountUsagePercent),
 				})
-				s.notifyEvent(ctx, "traffic_exceeded", "流量超阈值", map[string]string{
+				fields := map[string]string{
 					"账号":  account.Name,
 					"事件":  "流量超阈值",
 					"使用率": fmt.Sprintf("%.2f%%", accountUsagePercent),
-				})
+				}
+				if hasMaxScope {
+					fields["流量分区"] = maxScope.Name
+				}
+				s.notifyEvent(ctx, "traffic_exceeded", "流量超阈值", fields)
 			}
 		} else {
 			applog.Warn("account", "cdt traffic unavailable", map[string]string{
@@ -330,13 +335,7 @@ func (s *Service) ManualStop(ctx context.Context, instanceID, requestedStopMode 
 		fields["reason"] = "prepaid_keep_charging"
 	}
 	applog.Info("keepalive", "manual stop submitted", fields)
-	notifyFields := instanceNotificationFields(location.Account.Name, location.Region.RegionID, instance, instanceID, "手工关机已提交")
-	notifyFields["停机模式"] = stopMode
-	if stopMode != configuredStopMode {
-		notifyFields["配置停机模式"] = configuredStopMode
-		notifyFields["说明"] = "包年包月实例自动使用普通停机"
-	}
-	s.notifyEvent(ctx, "manual_stop", "手工关机已提交", notifyFields)
+	s.notifyEvent(ctx, "manual_stop", "手工关机已提交", manualStopNotificationFields(location.Account.Name, location.Region.RegionID, instance, instanceID, stopMode))
 	s.patchInstanceAfterOperation(instanceID, "Stopping")
 	return nil
 }
@@ -598,14 +597,16 @@ func regionDisplayName(regionID string) string {
 	return regionID
 }
 
-func maxTrafficScopeUsage(scopes []TrafficScopeSnapshot) float64 {
-	var maxUsage float64
+func maxTrafficScope(scopes []TrafficScopeSnapshot) (TrafficScopeSnapshot, bool) {
+	var maxScope TrafficScopeSnapshot
+	var found bool
 	for _, scope := range scopes {
-		if scope.UsagePercent > maxUsage {
-			maxUsage = scope.UsagePercent
+		if !found || scope.UsagePercent > maxScope.UsagePercent {
+			maxScope = scope
+			found = true
 		}
 	}
-	return maxUsage
+	return maxScope, found
 }
 
 func regionTraffic(traffic aliyun.TrafficResult, regionID string, mainlandLimitGB, overseasLimitGB float64) (string, float64, float64, float64) {
@@ -631,7 +632,7 @@ func (s *Service) handleDecision(ctx context.Context, accountName string, snapsh
 			"usage":    fmt.Sprintf("%.2f%%", snapshot.AccountUsagePercent),
 		})
 		fields := instanceNotificationFields(accountName, snapshot.RegionID, snapshot, snapshot.InstanceID, "实例需要人工决策")
-		fields["原因"] = decision.Reason
+		fields["原因"] = decisionReasonText(decision.Reason)
 		fields["使用率"] = fmt.Sprintf("%.2f%%", snapshot.AccountUsagePercent)
 		s.notifyEvent(ctx, "manual_required", "实例需要人工决策", fields)
 		return
@@ -749,6 +750,23 @@ func instanceNotificationFields(accountName, regionID string, snapshot InstanceS
 		"实例名称":  snapshot.InstanceName,
 		"实例 ID": instanceID,
 		"事件":    action,
+	}
+}
+
+func manualStopNotificationFields(accountName, regionID string, snapshot InstanceSnapshot, instanceID, stopMode string) map[string]string {
+	fields := instanceNotificationFields(accountName, regionID, snapshot, instanceID, "手工关机已提交")
+	fields["停机模式"] = stopMode
+	return fields
+}
+
+func decisionReasonText(reason string) string {
+	switch reason {
+	case "account_traffic_unknown_manual_required":
+		return "账号流量读取失败，需要人工决策"
+	case "account_traffic_exceeded_manual_required":
+		return "流量已达到阈值，需要人工决策"
+	default:
+		return reason
 	}
 }
 
