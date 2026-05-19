@@ -101,15 +101,33 @@ func TestManualStopNotificationFieldsOmitConfiguredFallbackDetails(t *testing.T)
 }
 
 func TestDecisionReasonTextUsesChinese(t *testing.T) {
-	cases := map[string]string{
-		"account_traffic_unknown_manual_required":  "账号流量读取失败，需要人工决策",
-		"account_traffic_exceeded_manual_required": "流量已达到阈值，需要人工决策",
+	cases := []struct {
+		reason string
+		usage  float64
+		want   string
+	}{
+		{reason: "account_traffic_unknown_manual_required", usage: 0, want: "账号流量读取失败，需要人工决策"},
+		{reason: "account_traffic_exceeded_manual_required", usage: 98.12, want: "流量已达到阈值 98.12%，需要人工决策"},
 	}
 
-	for reason, want := range cases {
-		if got := decisionReasonText(reason); got != want {
-			t.Fatalf("decisionReasonText(%q) = %q, want %q", reason, got, want)
+	for _, tt := range cases {
+		if got := decisionReasonText(tt.reason, tt.usage); got != tt.want {
+			t.Fatalf("decisionReasonText(%q, %.2f) = %q, want %q", tt.reason, tt.usage, got, tt.want)
 		}
+	}
+}
+
+func TestTrafficExceededNotificationFieldsMergeScopeAndUsage(t *testing.T) {
+	fields := trafficExceededNotificationFields("Huhu", TrafficScopeSnapshot{
+		Name:         "非中国内地",
+		UsagePercent: 98.12,
+	})
+
+	if fields["流量分区"] != "非中国内地使用率：98.12%" {
+		t.Fatalf("traffic scope field = %q, want merged scope and usage", fields["流量分区"])
+	}
+	if _, ok := fields["使用率"]; ok {
+		t.Fatalf("traffic exceeded notification should not include standalone usage: %#v", fields)
 	}
 }
 

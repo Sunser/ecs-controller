@@ -145,15 +145,15 @@ func (s *Service) Refresh(ctx context.Context) error {
 					"account": account.Name,
 					"usage":   fmt.Sprintf("%.2f%%", accountUsagePercent),
 				})
-				fields := map[string]string{
-					"账号":  account.Name,
-					"事件":  "流量超阈值",
-					"使用率": fmt.Sprintf("%.2f%%", accountUsagePercent),
-				}
 				if hasMaxScope {
-					fields["流量分区"] = maxScope.Name
+					s.notifyEvent(ctx, "traffic_exceeded", "流量超阈值", trafficExceededNotificationFields(account.Name, maxScope))
+				} else {
+					s.notifyEvent(ctx, "traffic_exceeded", "流量超阈值", map[string]string{
+						"账号":  account.Name,
+						"事件":  "流量超阈值",
+						"使用率": fmt.Sprintf("%.2f%%", accountUsagePercent),
+					})
 				}
-				s.notifyEvent(ctx, "traffic_exceeded", "流量超阈值", fields)
 			}
 		} else {
 			applog.Warn("account", "cdt traffic unavailable", map[string]string{
@@ -632,8 +632,7 @@ func (s *Service) handleDecision(ctx context.Context, accountName string, snapsh
 			"usage":    fmt.Sprintf("%.2f%%", snapshot.AccountUsagePercent),
 		})
 		fields := instanceNotificationFields(accountName, snapshot.RegionID, snapshot, snapshot.InstanceID, "实例需要人工决策")
-		fields["原因"] = decisionReasonText(decision.Reason)
-		fields["使用率"] = fmt.Sprintf("%.2f%%", snapshot.AccountUsagePercent)
+		fields["原因"] = decisionReasonText(decision.Reason, snapshot.AccountUsagePercent)
 		s.notifyEvent(ctx, "manual_required", "实例需要人工决策", fields)
 		return
 	}
@@ -759,12 +758,20 @@ func manualStopNotificationFields(accountName, regionID string, snapshot Instanc
 	return fields
 }
 
-func decisionReasonText(reason string) string {
+func trafficExceededNotificationFields(accountName string, scope TrafficScopeSnapshot) map[string]string {
+	return map[string]string{
+		"账号":   accountName,
+		"事件":   "流量超阈值",
+		"流量分区": fmt.Sprintf("%s使用率：%.2f%%", scope.Name, scope.UsagePercent),
+	}
+}
+
+func decisionReasonText(reason string, usagePercent float64) string {
 	switch reason {
 	case "account_traffic_unknown_manual_required":
 		return "账号流量读取失败，需要人工决策"
 	case "account_traffic_exceeded_manual_required":
-		return "流量已达到阈值，需要人工决策"
+		return fmt.Sprintf("流量已达到阈值 %.2f%%，需要人工决策", usagePercent)
 	default:
 		return reason
 	}
