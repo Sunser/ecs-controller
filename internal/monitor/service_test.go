@@ -43,14 +43,56 @@ func TestTrafficRegionsPreserveCDTRegionUsage(t *testing.T) {
 	if regions[0].RegionID != "ap-southeast-1" || regions[0].Name != "新加坡" || regions[0].TrafficGB != 50 {
 		t.Fatalf("first region = %#v, want Singapore 50GB", regions[0])
 	}
-	if regions[1].RegionID != "ap-northeast-1" || regions[1].Name != "日本" || regions[1].TrafficGB != 20 {
-		t.Fatalf("second region = %#v, want Japan 20GB", regions[1])
+	if regions[1].RegionID != "ap-northeast-1" || regions[1].Name != "日本（东京）" || regions[1].TrafficGB != 20 {
+		t.Fatalf("second region = %#v, want 日本（东京） 20GB", regions[1])
 	}
 }
 
 func TestRegionDisplayNameIncludesMainlandCity(t *testing.T) {
 	if got := regionDisplayName("cn-hangzhou"); got != "华东1（杭州）" {
 		t.Fatalf("regionDisplayName(cn-hangzhou) = %q, want 华东1（杭州）", got)
+	}
+}
+
+func TestRegionDisplayNamesFollowAliyunRegionTable(t *testing.T) {
+	cases := map[string]string{
+		"cn-qingdao":     "华北1（青岛）",
+		"cn-beijing":     "华北2（北京）",
+		"cn-zhangjiakou": "华北3（张家口）",
+		"cn-huhehaote":   "华北5（呼和浩特）",
+		"cn-wulanchabu":  "华北6（乌兰察布）",
+		"cn-hangzhou":    "华东1（杭州）",
+		"cn-shanghai":    "华东2（上海）",
+		"cn-nanjing":     "华东5（南京）",
+		"cn-fuzhou":      "华东6（福州）",
+		"cn-wuhan-lr":    "华中1（武汉）",
+		"cn-shenzhen":    "华南1（深圳）",
+		"cn-heyuan":      "华南2（河源）",
+		"cn-guangzhou":   "华南3（广州）",
+		"cn-chengdu":     "西南1（成都）",
+		"cn-zhongwei":    "西北2（中卫）",
+		"cn-hongkong":    "中国香港",
+		"ap-southeast-1": "新加坡",
+		"ap-southeast-3": "马来西亚（吉隆坡）",
+		"ap-southeast-5": "印度尼西亚（雅加达）",
+		"ap-southeast-6": "菲律宾（马尼拉）",
+		"ap-southeast-7": "泰国（曼谷）",
+		"ap-northeast-1": "日本（东京）",
+		"ap-northeast-2": "韩国（首尔）",
+		"us-west-1":      "美国（硅谷）",
+		"us-east-1":      "美国（弗吉尼亚）",
+		"eu-central-1":   "德国（法兰克福）",
+		"eu-west-1":      "英国（伦敦）",
+		"eu-west-2":      "法国（巴黎）",
+		"me-east-1":      "阿联酋（迪拜）",
+		"me-central-1":   "沙特（利雅得）",
+		"na-south-1":     "墨西哥",
+	}
+
+	for regionID, want := range cases {
+		if got := regionDisplayName(regionID); got != want {
+			t.Fatalf("regionDisplayName(%s) = %q, want %q", regionID, got, want)
+		}
 	}
 }
 

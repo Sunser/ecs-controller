@@ -33,6 +33,7 @@ document.getElementById('stopMode').onchange = renderOptionHelp;
 document.getElementById('notificationEnabled').onchange = renderOptionHelp;
 document.getElementById('manualRequiredNotifyInterval').onchange = renderOptionHelp;
 document.getElementById('trafficExceededNotifyInterval').onchange = renderOptionHelp;
+document.addEventListener('click', function() { closeStopMenus(); });
 document.querySelectorAll('.tab').forEach(function(button) {
   button.onclick = function() { switchTab(button.dataset.tab); };
 });
@@ -167,7 +168,7 @@ function renderInstanceRows(rows) {
     const tr = document.createElement('tr');
     tr.appendChild(cell(accountText(row)));
     tr.appendChild(cell(instanceText(row)));
-    tr.appendChild(cell(esc(row.region_id || '-')));
+    tr.appendChild(cell(regionText(row)));
     tr.appendChild(cell(statusBadge(row.status)));
     tr.appendChild(cell(ipText(row)));
     tr.appendChild(cell(instanceTrafficText(row)));
@@ -263,16 +264,36 @@ function actionCell(row) {
   start.onclick = function() { action(row, 'start'); };
   const stop = document.createElement('button');
   stop.className = 'danger';
-  stop.textContent = '关机';
-  const stopPauseMode = document.createElement('select');
-  stopPauseMode.className = 'action-select';
-  stopPauseMode.innerHTML = '<option value="pause">保持暂停</option><option value="pause_until_next_month">下月恢复保活</option>';
-  stop.onclick = function() { action(row, 'stop', {pause_mode: stopPauseMode.value}); };
+  stop.textContent = '关机 ▾';
+  const stopWrap = document.createElement('div');
+  stopWrap.className = 'stop-menu-wrap';
+  const stopMenu = document.createElement('div');
+  stopMenu.className = 'stop-menu hidden';
+  stopMenu.innerHTML = '<button type="button" data-pause-mode="pause">关机，保持暂停</button><button type="button" data-pause-mode="pause_until_next_month">关机，下月恢复保活</button>';
+  stop.onclick = function(event) {
+    event.stopPropagation();
+    closeStopMenus(stopMenu);
+    stopMenu.classList.toggle('hidden');
+  };
+  stopMenu.onclick = function(event) {
+    event.stopPropagation();
+    const button = event.target.closest('button[data-pause-mode]');
+    if (!button) return;
+    stopMenu.classList.add('hidden');
+    action(row, 'stop', {pause_mode: button.dataset.pauseMode});
+  };
+  stopWrap.appendChild(stop);
+  stopWrap.appendChild(stopMenu);
   box.appendChild(start);
-  box.appendChild(stopPauseMode);
-  box.appendChild(stop);
+  box.appendChild(stopWrap);
   td.appendChild(box);
   return td;
+}
+
+function closeStopMenus(except) {
+  document.querySelectorAll('.stop-menu').forEach(function(menu) {
+    if (menu !== except) menu.classList.add('hidden');
+  });
 }
 
 function renderLogs(logs) {
@@ -326,6 +347,13 @@ function accountText(row) {
 
 function instanceText(row) {
   return '<div class="row-title"><strong>' + esc(row.instance_name || row.instance_id || '-') + '</strong><span class="muted mono">' + esc(row.instance_id || '-') + '</span></div>';
+}
+
+function regionText(row) {
+  const name = row.region_name || row.region_id || '-';
+  const id = row.region_id || '';
+  if (!id || name === id) return '<span class="mono">' + esc(name) + '</span>';
+  return '<div class="row-title"><strong>' + esc(name) + '</strong><span class="muted mono">' + esc(id) + '</span></div>';
 }
 
 function ipText(row) {

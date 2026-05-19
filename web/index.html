@@ -130,9 +130,9 @@
             <label>启用保活<select id="keepAliveEnabled"><option value="true">启用</option><option value="false">关闭</option></select></label>
             <label>流量告警阈值<input id="warningPercent" type="number" min="1" step="1"></label>
             <label class="wide-field">保活目标<select id="keepAliveTarget"><option value="disabled">关闭保活（disabled）</option><option value="all">保活所有实例（all）</option><option value="spot_only">保活抢占式实例（spot_only）</option><option value="include_list">只保活指定实例（include_list）</option></select></label>
-            <label class="wide-field">流量策略<select id="trafficPolicy"><option value="ignore_limit">忽略流量限制继续保活（ignore_limit）</option><option value="pause_when_exceeded">流量超阈值后暂停保活（pause_when_exceeded）</option><option value="manual_only_when_exceeded">流量超阈值后人工决策（manual_only_when_exceeded）</option></select></label>
             <label class="wide-field">超阈值处置<select id="trafficExceededAction"><option value="notify_only">只告警（notify_only）</option><option value="notify_and_stop">告警并关机（notify_and_stop）</option></select></label>
             <label class="wide-field">停机模式<select id="stopMode"><option value="StopCharging">节省停机（StopCharging）</option><option value="KeepCharging">普通停机（KeepCharging）</option></select></label>
+            <label class="wide-field">流量策略<select id="trafficPolicy"><option value="ignore_limit">忽略流量限制继续保活（ignore_limit）</option><option value="pause_when_exceeded">流量超阈值后暂停保活（pause_when_exceeded）</option><option value="manual_only_when_exceeded">流量超阈值后人工决策（manual_only_when_exceeded）</option></select></label>
             <label class="wide-field">指定保活实例 ID<textarea id="includeIds" placeholder="每行一个实例 ID，例如 i-xxx"></textarea></label>
           </div>
         </div>
@@ -149,7 +149,7 @@
         </div>
         <div class="panel settings-card notify-settings">
           <div class="panel-head"><h2>企业微信通知</h2></div>
-          <div class="form-grid">
+          <div class="form-grid notify-form-grid">
             <label>启用通知<select id="notificationEnabled"><option value="false">关闭</option><option value="true">启用</option></select></label>
             <label>人工决策通知间隔<input id="manualRequiredNotifyInterval" placeholder="1h"></label>
             <label>流量告警通知间隔<input id="trafficExceededNotifyInterval" placeholder="4h"></label>
