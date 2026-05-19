@@ -39,6 +39,7 @@ type regionCacheEntry struct {
 type keepAliveCheckSummary struct {
 	Checked        int
 	Starts         int
+	TrafficStops   int
 	ManualRequired int
 	Skipped        int
 }
@@ -244,6 +245,13 @@ func (s *Service) Refresh(ctx context.Context) error {
 					s.autoStart(ctx, client, snapshot)
 					snapshot.LastOperation = s.state.LastOperation(instance.InstanceID)
 				}
+				if shouldStopForTrafficExceeded(cfg, snapshot, accountTrafficAvailable, now) {
+					if s.autoStopForTrafficExceeded(ctx, client, cfg, snapshot) {
+						keepAliveSummary.TrafficStops++
+						snapshot.Status = "Stopping"
+					}
+					snapshot.LastOperation = s.state.LastOperation(instance.InstanceID)
+				}
 
 				next.Instances = append(next.Instances, snapshot)
 				locations[instance.InstanceID] = instanceLocation{Account: account, Region: region}
@@ -258,6 +266,7 @@ func (s *Service) Refresh(ctx context.Context) error {
 	applog.Info("keepalive", "check finished", map[string]string{
 		"checked":         fmt.Sprintf("%d", keepAliveSummary.Checked),
 		"starts":          fmt.Sprintf("%d", keepAliveSummary.Starts),
+		"traffic_stops":   fmt.Sprintf("%d", keepAliveSummary.TrafficStops),
 		"manual_required": fmt.Sprintf("%d", keepAliveSummary.ManualRequired),
 		"skipped":         fmt.Sprintf("%d", keepAliveSummary.Skipped),
 	})
@@ -471,6 +480,68 @@ func (s *Service) autoStart(ctx context.Context, client *aliyun.Client, snapshot
 	s.notifyEvent(ctx, "auto_start", "后台自动启动已提交", instanceNotificationFields(snapshot.AccountName, snapshot.RegionID, snapshot, snapshot.InstanceID, "后台自动启动已提交"))
 }
 
+func shouldStopForTrafficExceeded(cfg config.Config, snapshot InstanceSnapshot, accountTrafficAvailable bool, now time.Time) bool {
+	if cfg.Traffic.ExceededAction != "notify_and_stop" {
+		return false
+	}
+	if !cfg.KeepAlive.Enabled || cfg.KeepAlive.Target == "disabled" {
+		return false
+	}
+	if !accountTrafficAvailable {
+		return false
+	}
+	if snapshot.Status != "Running" {
+		return false
+	}
+	if snapshot.AccountUsagePercent < cfg.Traffic.WarningPercent {
+		return false
+	}
+	if !targetMatched(PolicyInput{
+		Target:             cfg.KeepAlive.Target,
+		IncludeInstanceIDs: cfg.KeepAlive.IncludeInstanceIDs,
+		Instance:           snapshot,
+	}) {
+		return false
+	}
+	if cfg.KeepAlive.StartCooldown > 0 &&
+		snapshot.LastOperation.Action == "traffic_stop" &&
+		snapshot.LastOperation.Success &&
+		!snapshot.LastOperation.OccurredAt.IsZero() &&
+		now.Sub(snapshot.LastOperation.OccurredAt) < cfg.KeepAlive.StartCooldown {
+		return false
+	}
+	return true
+}
+
+func (s *Service) autoStopForTrafficExceeded(ctx context.Context, client *aliyun.Client, cfg config.Config, snapshot InstanceSnapshot) bool {
+	now := time.Now()
+	stopMode := effectiveStopMode(cfg.KeepAlive.StopMode, snapshot)
+	if err := client.StopInstance(ctx, snapshot.RegionID, snapshot.InstanceID, stopMode); err != nil {
+		_ = s.state.RecordOperation(snapshot.InstanceID, Operation{Action: "traffic_stop", Success: false, Message: err.Error(), OccurredAt: now})
+		applog.Error("keepalive", "traffic stop failed", map[string]string{
+			"account":  snapshot.AccountName,
+			"region":   snapshot.RegionID,
+			"instance": snapshot.InstanceID,
+			"usage":    fmt.Sprintf("%.2f%%", snapshot.AccountUsagePercent),
+			"error":    err.Error(),
+		})
+		fields := trafficStopNotificationFields(snapshot, stopMode, "流量保护关机失败")
+		fields["错误"] = err.Error()
+		s.notifyEvent(ctx, "error", "流量保护关机失败", fields)
+		return false
+	}
+	_ = s.state.RecordOperation(snapshot.InstanceID, Operation{Action: "traffic_stop", Success: true, Message: "traffic stop submitted; mode=" + stopMode, OccurredAt: now})
+	applog.Info("keepalive", "traffic stop submitted", map[string]string{
+		"account":   snapshot.AccountName,
+		"region":    snapshot.RegionID,
+		"instance":  snapshot.InstanceID,
+		"stop_mode": stopMode,
+		"usage":     fmt.Sprintf("%.2f%%", snapshot.AccountUsagePercent),
+	})
+	s.notifyEvent(ctx, "traffic_stop", "流量保护关机已提交", trafficStopNotificationFields(snapshot, stopMode, "流量保护关机"))
+	return true
+}
+
 func (s *Service) location(instanceID string) (instanceLocation, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -633,6 +704,9 @@ func (s *Service) handleDecision(ctx context.Context, accountName string, snapsh
 		})
 		fields := instanceNotificationFields(accountName, snapshot.RegionID, snapshot, snapshot.InstanceID, "实例需要人工决策")
 		fields["原因"] = decisionReasonText(decision.Reason, snapshot.AccountUsagePercent)
+		if !s.manualRequiredNotificationAllowed(snapshot, decision) {
+			return
+		}
 		s.notifyEvent(ctx, "manual_required", "实例需要人工决策", fields)
 		return
 	}
@@ -650,6 +724,31 @@ func (s *Service) handleDecision(ctx context.Context, accountName string, snapsh
 		"status":   snapshot.Status,
 		"reason":   decision.Reason,
 	})
+}
+
+func (s *Service) manualRequiredNotificationAllowed(snapshot InstanceSnapshot, decision Decision) bool {
+	cfg := s.Config()
+	if !cfg.Notification.Enabled || !notifyEventEnabled(cfg.Notification.NotifyEvents, "manual_required") {
+		return false
+	}
+	allowed, err := s.state.AllowManualRequiredNotification(snapshot.InstanceID, decision.Reason, time.Now(), cfg.Notification.ManualRequiredNotifyInterval)
+	if err != nil {
+		applog.Warn("notification", "manual required notification throttle failed", map[string]string{
+			"account":  snapshot.AccountName,
+			"instance": snapshot.InstanceID,
+			"error":    err.Error(),
+		})
+		return true
+	}
+	if !allowed {
+		applog.Debug("notification", "manual required notification suppressed", map[string]string{
+			"account":  snapshot.AccountName,
+			"instance": snapshot.InstanceID,
+			"reason":   decision.Reason,
+			"interval": cfg.Notification.ManualRequiredNotifyInterval.String(),
+		})
+	}
+	return allowed
 }
 
 func (s *Service) notifyEvent(parent context.Context, event, title string, fields map[string]string) {
@@ -758,11 +857,30 @@ func manualStopNotificationFields(accountName, regionID string, snapshot Instanc
 	return fields
 }
 
+func trafficStopNotificationFields(snapshot InstanceSnapshot, stopMode, action string) map[string]string {
+	fields := instanceNotificationFields(snapshot.AccountName, snapshot.RegionID, snapshot, snapshot.InstanceID, action)
+	fields["停机模式"] = stopMode
+	fields["流量分区"] = scopeLabelForNotification(snapshot.AccountTrafficScope)
+	fields["使用率"] = fmt.Sprintf("%.2f%%", snapshot.AccountUsagePercent)
+	return fields
+}
+
 func trafficExceededNotificationFields(accountName string, scope TrafficScopeSnapshot) map[string]string {
 	return map[string]string{
 		"账号":   accountName,
 		"事件":   "流量超阈值",
 		"流量分区": fmt.Sprintf("%s使用率：%.2f%%", scope.Name, scope.UsagePercent),
+	}
+}
+
+func scopeLabelForNotification(scope string) string {
+	switch scope {
+	case aliyun.CDTScopeMainland:
+		return "中国内地"
+	case aliyun.CDTScopeOverseas:
+		return "非中国内地"
+	default:
+		return scope
 	}
 }
 

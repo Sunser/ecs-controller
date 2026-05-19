@@ -29,6 +29,7 @@ discovery:
 
 traffic:
   warning_percent: 95
+  exceeded_action: "notify_only"
 
 logging:
   level: "info"
@@ -40,6 +41,7 @@ notification:
   agentid: 1000002
   touser: ["user-a", "user-b"]
   notify_events: ["auto_start", "error"]
+  manual_required_notify_interval: "1h"
 
 keep_alive:
   enabled: true
@@ -67,9 +69,11 @@ accounts:
 	}
 	cfg.Server.RefreshInterval = 2 * time.Minute
 	cfg.Traffic.WarningPercent = 88
+	cfg.Traffic.ExceededAction = "notify_and_stop"
 	cfg.Logging.Level = "debug"
 	cfg.Notification.Enabled = true
-	cfg.Notification.NotifyEvents = []string{"traffic_exceeded", "error"}
+	cfg.Notification.NotifyEvents = []string{"traffic_exceeded", "traffic_stop", "error"}
+	cfg.Notification.ManualRequiredNotifyInterval = 30 * time.Minute
 	cfg.KeepAlive.StopMode = "KeepCharging"
 	cfg.KeepAlive.IncludeInstanceIDs = []string{"i-1", "i-2"}
 
@@ -90,7 +94,10 @@ accounts:
 		`access_key_secret: "${EC_ACCOUNT_CN1_ACCESS_KEY_SECRET}"`,
 		`refresh_interval: "2m"`,
 		`warning_percent: 88`,
+		`exceeded_action: "notify_and_stop"`,
 		`level: "debug"`,
+		`notify_events: ["traffic_exceeded", "traffic_stop", "error"]`,
+		`manual_required_notify_interval: "30m"`,
 		`stop_mode: "KeepCharging"`,
 		`include_instance_ids: ["i-1", "i-2"]`,
 	} {

@@ -16,10 +16,11 @@ type StateStore struct {
 }
 
 type PersistentState struct {
-	ManualPaused    map[string]bool                  `json:"manual_paused"`
-	LastStartUnix   map[string]int64                 `json:"last_start_unix"`
-	LastOperations  map[string]Operation             `json:"last_operations"`
-	InstanceTraffic map[string]CachedInstanceTraffic `json:"instance_traffic,omitempty"`
+	ManualPaused                 map[string]bool                  `json:"manual_paused"`
+	LastStartUnix                map[string]int64                 `json:"last_start_unix"`
+	LastOperations               map[string]Operation             `json:"last_operations"`
+	InstanceTraffic              map[string]CachedInstanceTraffic `json:"instance_traffic,omitempty"`
+	LastManualRequiredNotifyUnix map[string]int64                 `json:"last_manual_required_notify_unix,omitempty"`
 }
 
 type CachedInstanceTraffic struct {
@@ -103,6 +104,22 @@ func (s *StateStore) RecordOperation(instanceID string, operation Operation) err
 	return s.saveLocked()
 }
 
+func (s *StateStore) AllowManualRequiredNotification(instanceID, reason string, at time.Time, interval time.Duration) (bool, error) {
+	if at.IsZero() {
+		at = time.Now()
+	}
+	key := instanceID + "|" + reason
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ensureMaps()
+	lastUnix := s.data.LastManualRequiredNotifyUnix[key]
+	if lastUnix > 0 && interval > 0 && at.Sub(time.Unix(lastUnix, 0)) < interval {
+		return false, nil
+	}
+	s.data.LastManualRequiredNotifyUnix[key] = at.Unix()
+	return true, s.saveLocked()
+}
+
 func (s *StateStore) CachedInstanceTraffic(instanceID, month string) (CachedInstanceTraffic, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -161,13 +178,17 @@ func (s *StateStore) ensureMaps() {
 	if s.data.InstanceTraffic == nil {
 		s.data.InstanceTraffic = map[string]CachedInstanceTraffic{}
 	}
+	if s.data.LastManualRequiredNotifyUnix == nil {
+		s.data.LastManualRequiredNotifyUnix = map[string]int64{}
+	}
 }
 
 func emptyState() PersistentState {
 	return PersistentState{
-		ManualPaused:    map[string]bool{},
-		LastStartUnix:   map[string]int64{},
-		LastOperations:  map[string]Operation{},
-		InstanceTraffic: map[string]CachedInstanceTraffic{},
+		ManualPaused:                 map[string]bool{},
+		LastStartUnix:                map[string]int64{},
+		LastOperations:               map[string]Operation{},
+		InstanceTraffic:              map[string]CachedInstanceTraffic{},
+		LastManualRequiredNotifyUnix: map[string]int64{},
 	}
 }

@@ -131,6 +131,69 @@ func TestTrafficExceededNotificationFieldsMergeScopeAndUsage(t *testing.T) {
 	}
 }
 
+func TestShouldStopForTrafficExceededRequiresExceededRunningTarget(t *testing.T) {
+	cfg := testConfigWithTrafficPolicy("pause_when_exceeded")
+	cfg.Traffic.ExceededAction = "notify_and_stop"
+	now := time.Date(2026, 5, 19, 8, 0, 0, 0, time.UTC)
+	snapshot := InstanceSnapshot{
+		InstanceID:          "i-1",
+		Status:              "Running",
+		Spot:                true,
+		AccountTrafficScope: aliyun.CDTScopeMainland,
+		AccountUsagePercent: 96,
+		InstanceChargeType:  "PostPaid",
+		LastOperation:       Operation{},
+	}
+
+	if !shouldStopForTrafficExceeded(cfg, snapshot, true, now) {
+		t.Fatal("shouldStopForTrafficExceeded() = false, want true")
+	}
+
+	snapshot.AccountUsagePercent = 94
+	if shouldStopForTrafficExceeded(cfg, snapshot, true, now) {
+		t.Fatal("below warning threshold should not stop")
+	}
+
+	snapshot.AccountUsagePercent = 96
+	snapshot.Status = "Stopped"
+	if shouldStopForTrafficExceeded(cfg, snapshot, true, now) {
+		t.Fatal("stopped instance should not stop again")
+	}
+
+	snapshot.Status = "Running"
+	snapshot.Spot = false
+	if shouldStopForTrafficExceeded(cfg, snapshot, true, now) {
+		t.Fatal("non-target instance should not stop")
+	}
+
+	snapshot.Spot = true
+	if shouldStopForTrafficExceeded(cfg, snapshot, false, now) {
+		t.Fatal("unknown account traffic should not stop")
+	}
+}
+
+func TestShouldStopForTrafficExceededHonorsRepeatProtection(t *testing.T) {
+	cfg := testConfigWithTrafficPolicy("pause_when_exceeded")
+	cfg.Traffic.ExceededAction = "notify_and_stop"
+	cfg.KeepAlive.StartCooldown = 10 * time.Minute
+	now := time.Date(2026, 5, 19, 8, 0, 0, 0, time.UTC)
+	snapshot := InstanceSnapshot{
+		InstanceID:          "i-1",
+		Status:              "Running",
+		Spot:                true,
+		AccountUsagePercent: 96,
+		LastOperation: Operation{
+			Action:     "traffic_stop",
+			Success:    true,
+			OccurredAt: now.Add(-5 * time.Minute),
+		},
+	}
+
+	if shouldStopForTrafficExceeded(cfg, snapshot, true, now) {
+		t.Fatal("recent traffic_stop should suppress repeated stop")
+	}
+}
+
 func TestMaxTrafficScopeSelectsScopeName(t *testing.T) {
 	scope, ok := maxTrafficScope([]TrafficScopeSnapshot{
 		{Key: aliyun.CDTScopeMainland, Name: "中国内地", UsagePercent: 50},
@@ -174,7 +237,9 @@ func TestUpdateSettingsPersistsDiscoveryAndNotificationSettings(t *testing.T) {
 	update := service.Settings()
 	update.Discovery.RegionRefreshInterval = "12h"
 	update.Notification.Enabled = true
-	update.Notification.NotifyEvents = []string{"traffic_exceeded", "error"}
+	update.Notification.NotifyEvents = []string{"traffic_exceeded", "traffic_stop", "error"}
+	update.Notification.ManualRequiredNotifyInterval = "30m"
+	update.Traffic.ExceededAction = "notify_and_stop"
 
 	if err := service.UpdateSettings(update); err != nil {
 		t.Fatalf("UpdateSettings() error = %v", err)
@@ -187,8 +252,14 @@ func TestUpdateSettingsPersistsDiscoveryAndNotificationSettings(t *testing.T) {
 	if !got.Notification.Enabled {
 		t.Fatal("notification enabled = false, want true")
 	}
-	if len(got.Notification.NotifyEvents) != 2 || got.Notification.NotifyEvents[0] != "traffic_exceeded" {
+	if len(got.Notification.NotifyEvents) != 3 || got.Notification.NotifyEvents[1] != "traffic_stop" {
 		t.Fatalf("notify events = %#v", got.Notification.NotifyEvents)
+	}
+	if got.Notification.ManualRequiredNotifyInterval != "30m" {
+		t.Fatalf("manual required notify interval = %q, want 30m", got.Notification.ManualRequiredNotifyInterval)
+	}
+	if got.Traffic.ExceededAction != "notify_and_stop" {
+		t.Fatalf("traffic exceeded action = %q, want notify_and_stop", got.Traffic.ExceededAction)
 	}
 }
 
@@ -210,6 +281,7 @@ discovery:
 
 traffic:
   warning_percent: 95
+  exceeded_action: "notify_only"
 
 logging:
   level: "info"
@@ -221,6 +293,7 @@ notification:
   agentid: 0
   touser: []
   notify_events: ["auto_start", "error"]
+  manual_required_notify_interval: "1h"
 
 keep_alive:
   enabled: true
@@ -255,6 +328,8 @@ accounts:
 	update.KeepAlive.StopMode = "KeepCharging"
 	update.Server.RefreshInterval = "2m"
 	update.Traffic.WarningPercent = 90
+	update.Traffic.ExceededAction = "notify_and_stop"
+	update.Notification.ManualRequiredNotifyInterval = "45m"
 
 	if err := service.UpdateSettings(update); err != nil {
 		t.Fatalf("UpdateSettings() error = %v", err)
@@ -267,6 +342,12 @@ accounts:
 	text := string(data)
 	if !strings.Contains(text, `stop_mode: "KeepCharging"`) {
 		t.Fatalf("config was not updated:\n%s", text)
+	}
+	if !strings.Contains(text, `exceeded_action: "notify_and_stop"`) {
+		t.Fatalf("traffic exceeded action was not updated:\n%s", text)
+	}
+	if !strings.Contains(text, `manual_required_notify_interval: "45m"`) {
+		t.Fatalf("manual required notify interval was not updated:\n%s", text)
 	}
 	if !strings.Contains(text, `password: "${EC_PASSWORD}"`) || strings.Contains(text, "expanded-sk") {
 		t.Fatalf("config did not preserve secret placeholders:\n%s", text)
@@ -285,10 +366,11 @@ func testConfigWithTrafficPolicy(policy string) config.Config {
 			RegionRefreshInterval: 24 * time.Hour,
 			MaxConcurrency:        4,
 		},
-		Traffic: config.TrafficConfig{WarningPercent: 95},
+		Traffic: config.TrafficConfig{WarningPercent: 95, ExceededAction: "notify_only"},
 		Logging: config.LoggingConfig{Level: "info"},
 		Notification: config.NotificationConfig{
-			NotifyEvents: []string{"auto_start", "manual_start", "manual_stop", "manual_required", "traffic_exceeded", "error"},
+			NotifyEvents:                 []string{"auto_start", "manual_start", "manual_stop", "manual_required", "traffic_exceeded", "traffic_stop", "error"},
+			ManualRequiredNotifyInterval: time.Hour,
 		},
 		KeepAlive: config.KeepAliveConfig{
 			Enabled:       true,

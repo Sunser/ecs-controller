@@ -29,6 +29,7 @@ type DiscoverySettingsView struct {
 
 type TrafficSettingsView struct {
 	WarningPercent float64 `json:"warning_percent"`
+	ExceededAction string  `json:"exceeded_action"`
 }
 
 type KeepAliveSettingsView struct {
@@ -45,8 +46,9 @@ type LoggingSettingsView struct {
 }
 
 type NotificationSettingsView struct {
-	Enabled      bool     `json:"enabled"`
-	NotifyEvents []string `json:"notify_events"`
+	Enabled                      bool     `json:"enabled"`
+	NotifyEvents                 []string `json:"notify_events"`
+	ManualRequiredNotifyInterval string   `json:"manual_required_notify_interval"`
 }
 
 func (s *Service) Settings() SettingsView {
@@ -76,12 +78,17 @@ func (s *Service) UpdateSettings(update SettingsView) error {
 	if err != nil {
 		return fmt.Errorf("region_refresh_interval format is invalid")
 	}
+	manualRequiredNotifyInterval, err := time.ParseDuration(update.Notification.ManualRequiredNotifyInterval)
+	if err != nil {
+		return fmt.Errorf("manual_required_notify_interval format is invalid")
+	}
 
 	s.mu.Lock()
 	s.cfg.Server.RefreshInterval = refreshInterval
 	s.cfg.Server.RequestTimeout = requestTimeout
 	s.cfg.Discovery.RegionRefreshInterval = regionRefreshInterval
 	s.cfg.Traffic.WarningPercent = update.Traffic.WarningPercent
+	s.cfg.Traffic.ExceededAction = update.Traffic.ExceededAction
 	s.cfg.KeepAlive.Enabled = update.KeepAlive.Enabled
 	s.cfg.KeepAlive.Target = update.KeepAlive.Target
 	s.cfg.KeepAlive.TrafficPolicy = update.KeepAlive.TrafficPolicy
@@ -91,6 +98,7 @@ func (s *Service) UpdateSettings(update SettingsView) error {
 	s.cfg.Logging.Level = update.Logging.Level
 	s.cfg.Notification.Enabled = update.Notification.Enabled
 	s.cfg.Notification.NotifyEvents = cleanList(update.Notification.NotifyEvents)
+	s.cfg.Notification.ManualRequiredNotifyInterval = manualRequiredNotifyInterval
 	view := s.settingsLocked()
 	updatedConfig := copyConfig(s.cfg)
 	s.mu.Unlock()
@@ -113,6 +121,7 @@ func (s *Service) settingsLocked() SettingsView {
 		},
 		Traffic: TrafficSettingsView{
 			WarningPercent: s.cfg.Traffic.WarningPercent,
+			ExceededAction: s.cfg.Traffic.ExceededAction,
 		},
 		KeepAlive: KeepAliveSettingsView{
 			Enabled:            s.cfg.KeepAlive.Enabled,
@@ -126,8 +135,9 @@ func (s *Service) settingsLocked() SettingsView {
 			Level: s.cfg.Logging.Level,
 		},
 		Notification: NotificationSettingsView{
-			Enabled:      s.cfg.Notification.Enabled,
-			NotifyEvents: append([]string(nil), s.cfg.Notification.NotifyEvents...),
+			Enabled:                      s.cfg.Notification.Enabled,
+			NotifyEvents:                 append([]string(nil), s.cfg.Notification.NotifyEvents...),
+			ManualRequiredNotifyInterval: formatDuration(s.cfg.Notification.ManualRequiredNotifyInterval),
 		},
 	}
 }
@@ -146,6 +156,11 @@ func formatDuration(duration time.Duration) string {
 func validateSettings(settings SettingsView) error {
 	if settings.Traffic.WarningPercent <= 0 {
 		return fmt.Errorf("warning_percent must be greater than 0")
+	}
+	switch settings.Traffic.ExceededAction {
+	case "notify_only", "notify_and_stop":
+	default:
+		return fmt.Errorf("unsupported traffic.exceeded_action: %s", settings.Traffic.ExceededAction)
 	}
 	if _, err := time.ParseDuration(settings.Server.RefreshInterval); err != nil {
 		return fmt.Errorf("refresh_interval format is invalid")
@@ -178,6 +193,9 @@ func validateSettings(settings SettingsView) error {
 	default:
 		return fmt.Errorf("unsupported traffic_policy: %s", settings.KeepAlive.TrafficPolicy)
 	}
+	if settings.Traffic.ExceededAction == "notify_and_stop" && settings.KeepAlive.TrafficPolicy == "ignore_limit" {
+		return fmt.Errorf("traffic.exceeded_action=notify_and_stop cannot be used with traffic_policy=ignore_limit")
+	}
 	if _, err := time.ParseDuration(settings.KeepAlive.StartCooldown); err != nil {
 		return fmt.Errorf("start_cooldown format is invalid")
 	}
@@ -193,6 +211,13 @@ func validateSettings(settings SettingsView) error {
 	}
 	if err := validateNotifyEvents(settings.Notification.NotifyEvents); err != nil {
 		return err
+	}
+	if _, err := time.ParseDuration(settings.Notification.ManualRequiredNotifyInterval); err != nil {
+		return fmt.Errorf("manual_required_notify_interval format is invalid")
+	}
+	manualRequiredNotifyInterval, _ := time.ParseDuration(settings.Notification.ManualRequiredNotifyInterval)
+	if manualRequiredNotifyInterval <= 0 {
+		return fmt.Errorf("manual_required_notify_interval must be greater than 0")
 	}
 	return nil
 }
@@ -214,7 +239,7 @@ func cleanList(values []string) []string {
 func validateNotifyEvents(events []string) error {
 	for _, event := range events {
 		switch event {
-		case "all", "auto_start", "manual_start", "manual_stop", "manual_required", "traffic_exceeded", "error":
+		case "all", "auto_start", "manual_start", "manual_stop", "manual_required", "traffic_exceeded", "traffic_stop", "error":
 		default:
 			return fmt.Errorf("unsupported notification event: %s", event)
 		}

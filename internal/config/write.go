@@ -52,6 +52,7 @@ func renderGlobalSettings(original string, cfg Config) string {
 
 	builder.WriteString("\ntraffic:\n")
 	writeKeyValue(&builder, "warning_percent", formatFloat(cfg.Traffic.WarningPercent))
+	writeKeyValue(&builder, "exceeded_action", quote(cfg.Traffic.ExceededAction))
 
 	builder.WriteString("\nlogging:\n")
 	writeKeyValue(&builder, "level", quote(cfg.Logging.Level))
@@ -63,6 +64,7 @@ func renderGlobalSettings(original string, cfg Config) string {
 	writeKeyValue(&builder, "agentid", rawOrString(original, "notification", "agentid", "${EC_WECHAT_AGENTID}"))
 	writeKeyValue(&builder, "touser", rawOrString(original, "notification", "touser", quote("${EC_WECHAT_TOUSER}")))
 	writeKeyValue(&builder, "notify_events", renderList(cfg.Notification.NotifyEvents))
+	writeKeyValue(&builder, "manual_required_notify_interval", quote(formatDuration(cfg.Notification.ManualRequiredNotifyInterval.String())))
 
 	builder.WriteString("\nkeep_alive:\n")
 	writeKeyValue(&builder, "enabled", strconv.FormatBool(cfg.KeepAlive.Enabled))

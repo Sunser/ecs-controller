@@ -48,6 +48,9 @@ accounts:
 	if cfg.KeepAlive.TrafficPolicy != "manual_only_when_exceeded" {
 		t.Fatalf("traffic policy = %q", cfg.KeepAlive.TrafficPolicy)
 	}
+	if cfg.Traffic.ExceededAction != "notify_only" {
+		t.Fatalf("traffic exceeded action = %q, want notify_only", cfg.Traffic.ExceededAction)
+	}
 	if cfg.KeepAlive.StopMode != "StopCharging" {
 		t.Fatalf("stop mode = %q, want StopCharging", cfg.KeepAlive.StopMode)
 	}
@@ -71,6 +74,9 @@ accounts:
 	}
 	if len(cfg.Notification.NotifyEvents) != 2 || cfg.Notification.NotifyEvents[0] != "auto_start" {
 		t.Fatalf("notify events = %#v", cfg.Notification.NotifyEvents)
+	}
+	if cfg.Notification.ManualRequiredNotifyInterval != time.Hour {
+		t.Fatalf("manual required notify interval = %s, want 1h", cfg.Notification.ManualRequiredNotifyInterval)
 	}
 	if len(cfg.Accounts) != 1 {
 		t.Fatalf("accounts len = %d, want 1", len(cfg.Accounts))
@@ -151,11 +157,13 @@ func TestLoadBytesUsesEnvironmentAccountAliases(t *testing.T) {
 	t.Setenv("EC_ACCOUNT_INTL_PROD_REGIONS", "ap-southeast-1")
 	t.Setenv("EC_REFRESH_INTERVAL", "10m")
 	t.Setenv("EC_TRAFFIC_WARNING_PERCENT", "90")
+	t.Setenv("EC_TRAFFIC_EXCEEDED_ACTION", "notify_and_stop")
 	t.Setenv("EC_NOTIFY_ENABLED", "true")
 	t.Setenv("EC_WECHAT_CORPID", "corp-env")
 	t.Setenv("EC_WECHAT_CORPSECRET", "secret-env")
 	t.Setenv("EC_WECHAT_AGENTID", "1000003")
 	t.Setenv("EC_WECHAT_TOUSER", "user-a,user-b")
+	t.Setenv("EC_MANUAL_REQUIRED_NOTIFY_INTERVAL", "30m")
 
 	cfg, err := config.LoadBytes([]byte(`
 server:
@@ -170,8 +178,14 @@ server:
 	if cfg.Traffic.WarningPercent != 90 {
 		t.Fatalf("warning percent = %v, want 90", cfg.Traffic.WarningPercent)
 	}
+	if cfg.Traffic.ExceededAction != "notify_and_stop" {
+		t.Fatalf("traffic exceeded action = %q, want notify_and_stop", cfg.Traffic.ExceededAction)
+	}
 	if !cfg.Notification.Enabled || cfg.Notification.WeChatCorpID != "corp-env" || cfg.Notification.WeChatAgentID != 1000003 {
 		t.Fatalf("wechat notification config = %#v", cfg.Notification)
+	}
+	if cfg.Notification.ManualRequiredNotifyInterval != 30*time.Minute {
+		t.Fatalf("manual required notify interval = %s, want 30m", cfg.Notification.ManualRequiredNotifyInterval)
 	}
 	if len(cfg.Notification.WeChatToUser) != 2 || cfg.Notification.WeChatToUser[1] != "user-b" {
 		t.Fatalf("wechat receivers = %#v", cfg.Notification.WeChatToUser)
@@ -222,7 +236,7 @@ accounts:
 		t.Fatalf("LoadBytes() error = %v", err)
 	}
 
-	want := []string{"auto_start", "manual_start", "manual_stop", "manual_required", "traffic_exceeded", "error"}
+	want := []string{"auto_start", "manual_start", "manual_stop", "manual_required", "traffic_exceeded", "traffic_stop", "error"}
 	if len(cfg.Notification.NotifyEvents) != len(want) {
 		t.Fatalf("notify events = %#v, want %#v", cfg.Notification.NotifyEvents, want)
 	}
@@ -230,6 +244,28 @@ accounts:
 		if cfg.Notification.NotifyEvents[index] != event {
 			t.Fatalf("notify events = %#v, want %#v", cfg.Notification.NotifyEvents, want)
 		}
+	}
+}
+
+func TestLoadBytesRejectsTrafficStopWithIgnoreLimitPolicy(t *testing.T) {
+	_, err := config.LoadBytes([]byte(`
+server:
+  password: "secret"
+traffic:
+  exceeded_action: "notify_and_stop"
+keep_alive:
+  traffic_policy: "ignore_limit"
+accounts:
+  - name: "cn"
+    site: "china"
+    access_key_id: "ak"
+    access_key_secret: "sk"
+`))
+	if err == nil {
+		t.Fatal("LoadBytes() error = nil, want validation error")
+	}
+	if !strings.Contains(err.Error(), "notify_and_stop") || !strings.Contains(err.Error(), "ignore_limit") {
+		t.Fatalf("LoadBytes() error = %v, want conflict message", err)
 	}
 }
 

@@ -38,6 +38,7 @@ type DiscoveryConfig struct {
 
 type TrafficConfig struct {
 	WarningPercent float64
+	ExceededAction string
 }
 
 type LoggingConfig struct {
@@ -45,12 +46,13 @@ type LoggingConfig struct {
 }
 
 type NotificationConfig struct {
-	Enabled          bool
-	WeChatCorpID     string
-	WeChatCorpSecret string
-	WeChatAgentID    int
-	WeChatToUser     []string
-	NotifyEvents     []string
+	Enabled                      bool
+	WeChatCorpID                 string
+	WeChatCorpSecret             string
+	WeChatAgentID                int
+	WeChatToUser                 []string
+	NotifyEvents                 []string
+	ManualRequiredNotifyInterval time.Duration
 }
 
 type KeepAliveConfig struct {
@@ -207,10 +209,11 @@ func defaultConfig() Config {
 			RegionRefreshInterval: 24 * time.Hour,
 			MaxConcurrency:        4,
 		},
-		Traffic: TrafficConfig{WarningPercent: 95},
+		Traffic: TrafficConfig{WarningPercent: 95, ExceededAction: "notify_only"},
 		Logging: LoggingConfig{Level: "info"},
 		Notification: NotificationConfig{
-			NotifyEvents: []string{"auto_start", "manual_start", "manual_stop", "manual_required", "traffic_exceeded", "error"},
+			NotifyEvents:                 []string{"auto_start", "manual_start", "manual_stop", "manual_required", "traffic_exceeded", "traffic_stop", "error"},
+			ManualRequiredNotifyInterval: time.Hour,
 		},
 		KeepAlive: KeepAliveConfig{
 			Enabled:       true,
@@ -278,6 +281,8 @@ func applyTraffic(cfg *TrafficConfig, key, value string) error {
 			return fmt.Errorf("warning_percent 必须是数字")
 		}
 		cfg.WarningPercent = number
+	case "exceeded_action":
+		cfg.ExceededAction = scalar(value)
 	default:
 		return fmt.Errorf("未知 traffic 字段 %q", key)
 	}
@@ -316,6 +321,12 @@ func applyNotification(cfg *NotificationConfig, key, value string) error {
 		cfg.WeChatToUser = parseList(value)
 	case "notify_events":
 		cfg.NotifyEvents = parseList(value)
+	case "manual_required_notify_interval":
+		duration, err := parseDuration(value)
+		if err != nil {
+			return err
+		}
+		cfg.ManualRequiredNotifyInterval = duration
 	default:
 		return fmt.Errorf("未知 notification 字段 %q", key)
 	}
@@ -395,6 +406,14 @@ func validate(cfg *Config) error {
 	if cfg.Traffic.WarningPercent <= 0 {
 		return errors.New("traffic.warning_percent 必须大于 0")
 	}
+	if cfg.Traffic.ExceededAction == "" {
+		cfg.Traffic.ExceededAction = "notify_only"
+	}
+	switch cfg.Traffic.ExceededAction {
+	case "notify_only", "notify_and_stop":
+	default:
+		return fmt.Errorf("不支持的 traffic.exceeded_action: %s", cfg.Traffic.ExceededAction)
+	}
 	if cfg.KeepAlive.Target == "" {
 		cfg.KeepAlive.Target = "spot_only"
 	}
@@ -413,7 +432,10 @@ func validate(cfg *Config) error {
 		return fmt.Errorf("不支持的 logging.level: %s", cfg.Logging.Level)
 	}
 	if cfg.Notification.NotifyEvents == nil {
-		cfg.Notification.NotifyEvents = []string{"auto_start", "manual_start", "manual_stop", "manual_required", "traffic_exceeded", "error"}
+		cfg.Notification.NotifyEvents = []string{"auto_start", "manual_start", "manual_stop", "manual_required", "traffic_exceeded", "traffic_stop", "error"}
+	}
+	if cfg.Notification.ManualRequiredNotifyInterval <= 0 {
+		return errors.New("notification.manual_required_notify_interval 必须大于 0")
 	}
 	if err := validateNotifyEvents(cfg.Notification.NotifyEvents); err != nil {
 		return err
@@ -422,6 +444,9 @@ func validate(cfg *Config) error {
 	case "manual_only_when_exceeded", "ignore_limit", "pause_when_exceeded":
 	default:
 		return fmt.Errorf("不支持的 traffic_policy: %s", cfg.KeepAlive.TrafficPolicy)
+	}
+	if cfg.Traffic.ExceededAction == "notify_and_stop" && cfg.KeepAlive.TrafficPolicy == "ignore_limit" {
+		return errors.New("traffic.exceeded_action=notify_and_stop 不能与 keep_alive.traffic_policy=ignore_limit 同时使用")
 	}
 	switch cfg.KeepAlive.StopMode {
 	case "StopCharging", "KeepCharging":
@@ -469,7 +494,7 @@ func validate(cfg *Config) error {
 func validateNotifyEvents(events []string) error {
 	for _, event := range events {
 		switch event {
-		case "all", "auto_start", "manual_start", "manual_stop", "manual_required", "traffic_exceeded", "error":
+		case "all", "auto_start", "manual_start", "manual_stop", "manual_required", "traffic_exceeded", "traffic_stop", "error":
 		default:
 			return fmt.Errorf("不支持的 notification.notify_events: %s", event)
 		}
@@ -510,6 +535,9 @@ func applyEnv(cfg *Config, includeGlobal bool) error {
 		} else if ok {
 			cfg.Traffic.WarningPercent = value
 		}
+		if value, ok := lookupEnvString("EC_TRAFFIC_EXCEEDED_ACTION"); ok {
+			cfg.Traffic.ExceededAction = value
+		}
 		if value, ok := lookupEnvString("EC_LOG_LEVEL"); ok {
 			cfg.Logging.Level = strings.ToLower(value)
 		}
@@ -532,6 +560,11 @@ func applyEnv(cfg *Config, includeGlobal bool) error {
 		}
 		if value, ok := lookupEnvList("EC_NOTIFY_EVENTS"); ok {
 			cfg.Notification.NotifyEvents = value
+		}
+		if value, ok, err := lookupEnvDuration("EC_MANUAL_REQUIRED_NOTIFY_INTERVAL"); err != nil {
+			return err
+		} else if ok {
+			cfg.Notification.ManualRequiredNotifyInterval = value
 		}
 		if value, ok := lookupEnvBool("EC_KEEP_ALIVE_ENABLED"); ok {
 			cfg.KeepAlive.Enabled = value

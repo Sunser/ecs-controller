@@ -145,6 +145,7 @@ http://你的服务器IP:43210
 | 变量 | 必填 | 默认值 | 说明 |
 | --- | --- | --- | --- |
 | `EC_TRAFFIC_WARNING_PERCENT` | 否 | `95` | 流量告警阈值百分比。例如 `95` 表示达到额度的 95% 后告警或触发对应保活策略。 |
+| `EC_TRAFFIC_EXCEEDED_ACTION` | 否 | `notify_only` | 运行中实例所属流量分区超过阈值后的处置动作，支持 `notify_only`、`notify_and_stop`。 |
 
 账号流量按两个额度池计算：
 
@@ -152,6 +153,15 @@ http://你的服务器IP:43210
 - 非中国内地：默认建议 `200GB`。
 
 额度池是账号级共享的，不是单台实例独占的。同一账号下多个实例在同一个分区内会共享对应额度。
+
+`EC_TRAFFIC_EXCEEDED_ACTION` 可选值：
+
+| 值 | 说明 |
+| --- | --- |
+| `notify_only` | 只发送流量告警，不主动关机。 |
+| `notify_and_stop` | 发送流量告警，并对当前保活目标范围内、所属流量分区已经超过阈值的运行中实例提交关机。 |
+
+`notify_and_stop` 不会写入手工暂停状态。也就是说，如果次月流量低于阈值，停机实例仍可按保活策略自动恢复。`notify_and_stop` 不能和 `EC_TRAFFIC_POLICY=ignore_limit` 同时使用，避免出现“超阈值关机”和“忽略阈值启动”互相打架。
 
 ### 保活参数
 
@@ -199,7 +209,8 @@ http://你的服务器IP:43210
 | `EC_WECHAT_CORPSECRET` | 启用通知时必填 | 空 | 企业微信自建应用 Secret。 |
 | `EC_WECHAT_AGENTID` | 启用通知时必填 | `0` | 企业微信自建应用 AgentId。 |
 | `EC_WECHAT_TOUSER` | 启用通知时必填 | 空 | 接收人。单人写 `user1`，多人写 `user1,user2`。 |
-| `EC_NOTIFY_EVENTS` | 否 | `auto_start`<br>`manual_start`<br>`manual_stop`<br>`manual_required`<br>`traffic_exceeded`<br>`error` | 通知事件列表，多个用逗号分隔。 |
+| `EC_NOTIFY_EVENTS` | 否 | `auto_start`<br>`manual_start`<br>`manual_stop`<br>`manual_required`<br>`traffic_exceeded`<br>`traffic_stop`<br>`error` | 通知事件列表，多个用逗号分隔。 |
+| `EC_MANUAL_REQUIRED_NOTIFY_INTERVAL` | 否 | `1h` | 等待人工决策通知间隔。同一实例同一原因在该间隔内只通知一次，避免无人处理时反复提醒。 |
 
 通知使用企业微信自建应用文本消息，不使用群机器人 webhook。
 
@@ -212,6 +223,7 @@ http://你的服务器IP:43210
 | `manual_stop` | 页面手工关机。 |
 | `manual_required` | 流量超阈值或流量未知，需要人工决策。 |
 | `traffic_exceeded` | 账号某个流量额度池达到告警阈值。 |
+| `traffic_stop` | 运行中实例因超阈值处置动作被提交关机。 |
 | `error` | 阿里云接口、启动、关机或通知发送失败。 |
 | `all` | 发送全部事件。 |
 
@@ -301,6 +313,7 @@ EC_PASSWORD=change-me-to-a-long-random-password
 EC_REGION_REFRESH_INTERVAL=24h
 EC_MAX_CONCURRENCY=4
 EC_TRAFFIC_WARNING_PERCENT=95
+EC_TRAFFIC_EXCEEDED_ACTION=notify_only
 EC_LOG_LEVEL=info
 
 EC_NOTIFY_ENABLED=false
@@ -308,7 +321,8 @@ EC_WECHAT_CORPID=
 EC_WECHAT_CORPSECRET=
 EC_WECHAT_AGENTID=0
 EC_WECHAT_TOUSER=
-EC_NOTIFY_EVENTS=auto_start,manual_start,manual_stop,manual_required,traffic_exceeded,error
+EC_NOTIFY_EVENTS=auto_start,manual_start,manual_stop,manual_required,traffic_exceeded,traffic_stop,error
+EC_MANUAL_REQUIRED_NOTIFY_INTERVAL=1h
 
 EC_KEEP_ALIVE_ENABLED=true
 EC_KEEP_ALIVE_TARGET=spot_only
@@ -417,7 +431,7 @@ Web 设置页只能修改非密钥项，包括：
 | `ecs:DescribeInstanceStatus` | 预留给实例状态查询。 |
 | `ecs:DescribeNetworkInterfaces` | 读取网卡 IPv6 地址。 |
 | `ecs:StartInstance` | 后台保活和页面手工启动。 |
-| `ecs:StopInstance` | 页面手工关机。 |
+| `ecs:StopInstance` | 页面手工关机，以及启用 `notify_and_stop` 后的流量保护关机。 |
 | `cms:QueryMetricList` | 读取云监控指标，用于估算实例本月流量。 |
 | `cdt:ListCdtInternetTraffic` | 读取账号 CDT 流量，用于账号级流量额度和保活阈值判断。 |
 
@@ -470,7 +484,7 @@ environment:
 
 ```text
 2026-05-19 05:36:28 [INFO] refresh finished accounts=1 duration=16.5s errors=0 instances=3
-2026-05-19 05:36:28 [INFO] keepalive check finished checked=3 manual_required=0 skipped=3 starts=0
+2026-05-19 05:36:28 [INFO] keepalive check finished checked=3 manual_required=0 skipped=3 starts=0 traffic_stops=0
 2026-05-19 05:36:18 [DEBUG] traffic cms instance traffic loaded account=Huhu instance=i-xxx region=cn-hangzhou used=0.11GB
 ```
 
