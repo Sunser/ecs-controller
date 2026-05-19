@@ -78,6 +78,12 @@ accounts:
 	if cfg.Notification.ManualRequiredNotifyInterval != time.Hour {
 		t.Fatalf("manual required notify interval = %s, want 1h", cfg.Notification.ManualRequiredNotifyInterval)
 	}
+	if cfg.Notification.TrafficExceededNotifyInterval != 4*time.Hour {
+		t.Fatalf("traffic exceeded notify interval = %s, want 4h", cfg.Notification.TrafficExceededNotifyInterval)
+	}
+	if cfg.KeepAlive.OperationCooldown != 10*time.Minute {
+		t.Fatalf("operation cooldown = %s, want 10m", cfg.KeepAlive.OperationCooldown)
+	}
 	if len(cfg.Accounts) != 1 {
 		t.Fatalf("accounts len = %d, want 1", len(cfg.Accounts))
 	}
@@ -164,6 +170,8 @@ func TestLoadBytesUsesEnvironmentAccountAliases(t *testing.T) {
 	t.Setenv("EC_WECHAT_AGENTID", "1000003")
 	t.Setenv("EC_WECHAT_TOUSER", "user-a,user-b")
 	t.Setenv("EC_MANUAL_REQUIRED_NOTIFY_INTERVAL", "30m")
+	t.Setenv("EC_TRAFFIC_EXCEEDED_NOTIFY_INTERVAL", "2h")
+	t.Setenv("EC_OPERATION_COOLDOWN", "15m")
 
 	cfg, err := config.LoadBytes([]byte(`
 server:
@@ -186,6 +194,12 @@ server:
 	}
 	if cfg.Notification.ManualRequiredNotifyInterval != 30*time.Minute {
 		t.Fatalf("manual required notify interval = %s, want 30m", cfg.Notification.ManualRequiredNotifyInterval)
+	}
+	if cfg.Notification.TrafficExceededNotifyInterval != 2*time.Hour {
+		t.Fatalf("traffic exceeded notify interval = %s, want 2h", cfg.Notification.TrafficExceededNotifyInterval)
+	}
+	if cfg.KeepAlive.OperationCooldown != 15*time.Minute {
+		t.Fatalf("operation cooldown = %s, want 15m", cfg.KeepAlive.OperationCooldown)
 	}
 	if len(cfg.Notification.WeChatToUser) != 2 || cfg.Notification.WeChatToUser[1] != "user-b" {
 		t.Fatalf("wechat receivers = %#v", cfg.Notification.WeChatToUser)

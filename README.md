@@ -20,7 +20,7 @@ ECS Controller 是一个用于阿里云 ECS 的轻量控制台，主要做三件
 - 支持流量超阈值后继续保活、暂停保活或转人工决策。
 - 支持 Web 手工启动、手工关机。
 - 支持全局停机模式，非包年包月实例可使用节省停机，包年包月实例自动降级为普通停机。
-- 支持手工关机后暂停该实例后台保活。
+- 支持手工关机后暂停该实例后台保活，也可以选择下月自动恢复保活。
 - 支持企业微信自建应用文本通知。
 - 支持 Web 设置页修改非密钥类运行参数。
 - 支持运行日志页面，方便查看巡检、保活、流量和通知事件。
@@ -110,7 +110,7 @@ http://你的服务器IP:43210
 
 `/data/state.json` 只保存运行状态，不是配置文件。它包含：
 
-- 手工关机后暂停保活的实例 ID；
+- 手工关机后的暂停保活状态和可选恢复时间；
 - 最近启动时间；
 - 最近操作记录；
 - 实例本月流量缓存。
@@ -128,7 +128,7 @@ http://你的服务器IP:43210
 | `EC_REFRESH_INTERVAL` | 否 | `5m` | 后台主巡检间隔。会刷新账号流量、实例列表、实例流量和保活决策。 |
 | `EC_REQUEST_TIMEOUT` | 否 | `20s` | 单次阿里云 API 请求超时。 |
 | `EC_REGION_REFRESH_INTERVAL` | 否 | `24h` | `regions=auto` 时地域列表缓存时间，避免每轮都调用 `DescribeRegions`。 |
-| `EC_MAX_CONCURRENCY` | 否 | `4` | 预留并发上限。当前主要作为配置项保留。 |
+| `EC_MAX_CONCURRENCY` | 否 | `4` | 实例处理并发上限。每个地域内同时处理实例流量读取和保活判断的数量。 |
 | `EC_LOG_LEVEL` | 否 | `info` | 日志级别，可填 `debug`、`info`、`warn`、`error`。 |
 
 时间格式使用 Go duration，例如：
@@ -170,7 +170,7 @@ http://你的服务器IP:43210
 | `EC_KEEP_ALIVE_ENABLED` | 否 | `true` | 是否启用后台自动保活。关闭后仍可查看和手工操作。 |
 | `EC_KEEP_ALIVE_TARGET` | 否 | `spot_only` | 保活目标，支持 `disabled`、`all`、`spot_only`、`include_list`。 |
 | `EC_TRAFFIC_POLICY` | 否 | `manual_only_when_exceeded` | 流量策略，支持 `ignore_limit`、`pause_when_exceeded`、`manual_only_when_exceeded`。 |
-| `EC_START_COOLDOWN` | 否 | `10m` | 同一实例重复启动保护间隔，避免短时间重复调用 `StartInstance`。 |
+| `EC_OPERATION_COOLDOWN` | 否 | `10m` | 同一实例重复操作保护间隔，用于启动和流量超阈值关机的重复保护。 |
 | `EC_STOP_MODE` | 否 | `StopCharging` | 默认停机模式，支持 `StopCharging` 和 `KeepCharging`。 |
 | `EC_INCLUDE_INSTANCE_IDS` | 否 | 空 | 指定保活实例 ID。仅在 `EC_KEEP_ALIVE_TARGET=include_list` 时使用，多个用逗号分隔。 |
 
@@ -198,7 +198,10 @@ http://你的服务器IP:43210
 | `StopCharging` | 节省停机。非包年包月实例可使用；包年包月实例会自动降级为 `KeepCharging`。 |
 | `KeepCharging` | 普通停机。关机请求保持普通停机模式。 |
 
-手工关机成功后，该实例会被写入手工暂停列表，下一轮后台保活不会立刻把它重新拉起。页面手工启动成功后会解除这个暂停状态。
+手工关机成功后可以选择两种暂停方式：
+
+- 保持暂停：该实例会一直暂停后台保活，直到页面手工启动成功后解除暂停；
+- 下月恢复保活：该实例暂停到下月 1 日 00:00，之后后台保活会按当前策略重新接管。
 
 ### 企业微信通知参数
 
@@ -211,6 +214,7 @@ http://你的服务器IP:43210
 | `EC_WECHAT_TOUSER` | 启用通知时必填 | 空 | 接收人。单人写 `user1`，多人写 `user1,user2`。 |
 | `EC_NOTIFY_EVENTS` | 否 | `auto_start`<br>`manual_start`<br>`manual_stop`<br>`manual_required`<br>`traffic_exceeded`<br>`traffic_stop`<br>`error` | 通知事件列表，多个用逗号分隔。 |
 | `EC_MANUAL_REQUIRED_NOTIFY_INTERVAL` | 否 | `1h` | 等待人工决策通知间隔。同一实例同一原因在该间隔内只通知一次，避免无人处理时反复提醒。 |
+| `EC_TRAFFIC_EXCEEDED_NOTIFY_INTERVAL` | 否 | `4h` | 流量超阈值通知间隔。同一账号同一流量分区在该间隔内只通知一次。 |
 
 通知使用企业微信自建应用文本消息，不使用群机器人 webhook。
 
@@ -323,11 +327,12 @@ EC_WECHAT_AGENTID=0
 EC_WECHAT_TOUSER=
 EC_NOTIFY_EVENTS=auto_start,manual_start,manual_stop,manual_required,traffic_exceeded,traffic_stop,error
 EC_MANUAL_REQUIRED_NOTIFY_INTERVAL=1h
+EC_TRAFFIC_EXCEEDED_NOTIFY_INTERVAL=4h
 
 EC_KEEP_ALIVE_ENABLED=true
 EC_KEEP_ALIVE_TARGET=spot_only
 EC_TRAFFIC_POLICY=manual_only_when_exceeded
-EC_START_COOLDOWN=10m
+EC_OPERATION_COOLDOWN=10m
 EC_STOP_MODE=StopCharging
 EC_INCLUDE_INSTANCE_IDS=
 
@@ -356,17 +361,21 @@ Web 设置页只能修改非密钥项，包括：
 
 - 后台检查间隔；
 - 地域缓存时间；
+- 实例处理并发；
 - API 请求超时；
 - 流量告警阈值；
+- 流量超阈值处置；
 - 是否启用保活；
 - 保活目标；
 - 流量策略；
-- 重复启动保护间隔；
+- 重复操作保护间隔；
 - 停机模式；
 - 指定保活实例 ID；
 - 日志级别；
 - 是否启用通知；
-- 通知事件。
+- 通知事件；
+- 人工决策通知间隔；
+- 流量超阈值通知间隔。
 
 保存后会写入：
 
@@ -431,7 +440,7 @@ Web 设置页只能修改非密钥项，包括：
 | `ecs:DescribeInstanceStatus` | 预留给实例状态查询。 |
 | `ecs:DescribeNetworkInterfaces` | 读取网卡 IPv6 地址。 |
 | `ecs:StartInstance` | 后台保活和页面手工启动。 |
-| `ecs:StopInstance` | 页面手工关机，以及启用 `notify_and_stop` 后的流量保护关机。 |
+| `ecs:StopInstance` | 页面手工关机，以及启用 `notify_and_stop` 后的流量超阈值关机。 |
 | `cms:QueryMetricList` | 读取云监控指标，用于估算实例本月流量。 |
 | `cdt:ListCdtInternetTraffic` | 读取账号 CDT 流量，用于账号级流量额度和保活阈值判断。 |
 

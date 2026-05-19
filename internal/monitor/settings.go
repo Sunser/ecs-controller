@@ -25,6 +25,7 @@ type ServerSettingsView struct {
 
 type DiscoverySettingsView struct {
 	RegionRefreshInterval string `json:"region_refresh_interval"`
+	MaxConcurrency        int    `json:"max_concurrency"`
 }
 
 type TrafficSettingsView struct {
@@ -36,7 +37,7 @@ type KeepAliveSettingsView struct {
 	Enabled            bool     `json:"enabled"`
 	Target             string   `json:"target"`
 	TrafficPolicy      string   `json:"traffic_policy"`
-	StartCooldown      string   `json:"start_cooldown"`
+	OperationCooldown  string   `json:"operation_cooldown"`
 	StopMode           string   `json:"stop_mode"`
 	IncludeInstanceIDs []string `json:"include_instance_ids"`
 }
@@ -46,9 +47,10 @@ type LoggingSettingsView struct {
 }
 
 type NotificationSettingsView struct {
-	Enabled                      bool     `json:"enabled"`
-	NotifyEvents                 []string `json:"notify_events"`
-	ManualRequiredNotifyInterval string   `json:"manual_required_notify_interval"`
+	Enabled                       bool     `json:"enabled"`
+	NotifyEvents                  []string `json:"notify_events"`
+	ManualRequiredNotifyInterval  string   `json:"manual_required_notify_interval"`
+	TrafficExceededNotifyInterval string   `json:"traffic_exceeded_notify_interval"`
 }
 
 func (s *Service) Settings() SettingsView {
@@ -62,9 +64,9 @@ func (s *Service) UpdateSettings(update SettingsView) error {
 		return err
 	}
 
-	cooldown, err := time.ParseDuration(update.KeepAlive.StartCooldown)
+	cooldown, err := time.ParseDuration(update.KeepAlive.OperationCooldown)
 	if err != nil {
-		return fmt.Errorf("start_cooldown format is invalid")
+		return fmt.Errorf("operation_cooldown format is invalid")
 	}
 	refreshInterval, err := time.ParseDuration(update.Server.RefreshInterval)
 	if err != nil {
@@ -82,23 +84,29 @@ func (s *Service) UpdateSettings(update SettingsView) error {
 	if err != nil {
 		return fmt.Errorf("manual_required_notify_interval format is invalid")
 	}
+	trafficExceededNotifyInterval, err := time.ParseDuration(update.Notification.TrafficExceededNotifyInterval)
+	if err != nil {
+		return fmt.Errorf("traffic_exceeded_notify_interval format is invalid")
+	}
 
 	s.mu.Lock()
 	s.cfg.Server.RefreshInterval = refreshInterval
 	s.cfg.Server.RequestTimeout = requestTimeout
 	s.cfg.Discovery.RegionRefreshInterval = regionRefreshInterval
+	s.cfg.Discovery.MaxConcurrency = update.Discovery.MaxConcurrency
 	s.cfg.Traffic.WarningPercent = update.Traffic.WarningPercent
 	s.cfg.Traffic.ExceededAction = update.Traffic.ExceededAction
 	s.cfg.KeepAlive.Enabled = update.KeepAlive.Enabled
 	s.cfg.KeepAlive.Target = update.KeepAlive.Target
 	s.cfg.KeepAlive.TrafficPolicy = update.KeepAlive.TrafficPolicy
-	s.cfg.KeepAlive.StartCooldown = cooldown
+	s.cfg.KeepAlive.OperationCooldown = cooldown
 	s.cfg.KeepAlive.StopMode = update.KeepAlive.StopMode
 	s.cfg.KeepAlive.IncludeInstanceIDs = cleanList(update.KeepAlive.IncludeInstanceIDs)
 	s.cfg.Logging.Level = update.Logging.Level
 	s.cfg.Notification.Enabled = update.Notification.Enabled
 	s.cfg.Notification.NotifyEvents = cleanList(update.Notification.NotifyEvents)
 	s.cfg.Notification.ManualRequiredNotifyInterval = manualRequiredNotifyInterval
+	s.cfg.Notification.TrafficExceededNotifyInterval = trafficExceededNotifyInterval
 	view := s.settingsLocked()
 	updatedConfig := copyConfig(s.cfg)
 	s.mu.Unlock()
@@ -118,6 +126,7 @@ func (s *Service) settingsLocked() SettingsView {
 		},
 		Discovery: DiscoverySettingsView{
 			RegionRefreshInterval: formatDuration(s.cfg.Discovery.RegionRefreshInterval),
+			MaxConcurrency:        s.cfg.Discovery.MaxConcurrency,
 		},
 		Traffic: TrafficSettingsView{
 			WarningPercent: s.cfg.Traffic.WarningPercent,
@@ -127,7 +136,7 @@ func (s *Service) settingsLocked() SettingsView {
 			Enabled:            s.cfg.KeepAlive.Enabled,
 			Target:             s.cfg.KeepAlive.Target,
 			TrafficPolicy:      s.cfg.KeepAlive.TrafficPolicy,
-			StartCooldown:      formatDuration(s.cfg.KeepAlive.StartCooldown),
+			OperationCooldown:  formatDuration(s.cfg.KeepAlive.OperationCooldown),
 			StopMode:           s.cfg.KeepAlive.StopMode,
 			IncludeInstanceIDs: append([]string(nil), s.cfg.KeepAlive.IncludeInstanceIDs...),
 		},
@@ -135,9 +144,10 @@ func (s *Service) settingsLocked() SettingsView {
 			Level: s.cfg.Logging.Level,
 		},
 		Notification: NotificationSettingsView{
-			Enabled:                      s.cfg.Notification.Enabled,
-			NotifyEvents:                 append([]string(nil), s.cfg.Notification.NotifyEvents...),
-			ManualRequiredNotifyInterval: formatDuration(s.cfg.Notification.ManualRequiredNotifyInterval),
+			Enabled:                       s.cfg.Notification.Enabled,
+			NotifyEvents:                  append([]string(nil), s.cfg.Notification.NotifyEvents...),
+			ManualRequiredNotifyInterval:  formatDuration(s.cfg.Notification.ManualRequiredNotifyInterval),
+			TrafficExceededNotifyInterval: formatDuration(s.cfg.Notification.TrafficExceededNotifyInterval),
 		},
 	}
 }
@@ -183,6 +193,9 @@ func validateSettings(settings SettingsView) error {
 	if regionRefreshInterval <= 0 {
 		return fmt.Errorf("region_refresh_interval must be greater than 0")
 	}
+	if settings.Discovery.MaxConcurrency <= 0 {
+		return fmt.Errorf("max_concurrency must be greater than 0")
+	}
 	switch settings.KeepAlive.Target {
 	case "spot_only", "all", "include_list", "disabled":
 	default:
@@ -196,8 +209,12 @@ func validateSettings(settings SettingsView) error {
 	if settings.Traffic.ExceededAction == "notify_and_stop" && settings.KeepAlive.TrafficPolicy == "ignore_limit" {
 		return fmt.Errorf("traffic.exceeded_action=notify_and_stop cannot be used with traffic_policy=ignore_limit")
 	}
-	if _, err := time.ParseDuration(settings.KeepAlive.StartCooldown); err != nil {
-		return fmt.Errorf("start_cooldown format is invalid")
+	if _, err := time.ParseDuration(settings.KeepAlive.OperationCooldown); err != nil {
+		return fmt.Errorf("operation_cooldown format is invalid")
+	}
+	operationCooldown, _ := time.ParseDuration(settings.KeepAlive.OperationCooldown)
+	if operationCooldown <= 0 {
+		return fmt.Errorf("operation_cooldown must be greater than 0")
 	}
 	switch settings.KeepAlive.StopMode {
 	case "StopCharging", "KeepCharging":
@@ -218,6 +235,13 @@ func validateSettings(settings SettingsView) error {
 	manualRequiredNotifyInterval, _ := time.ParseDuration(settings.Notification.ManualRequiredNotifyInterval)
 	if manualRequiredNotifyInterval <= 0 {
 		return fmt.Errorf("manual_required_notify_interval must be greater than 0")
+	}
+	if _, err := time.ParseDuration(settings.Notification.TrafficExceededNotifyInterval); err != nil {
+		return fmt.Errorf("traffic_exceeded_notify_interval format is invalid")
+	}
+	trafficExceededNotifyInterval, _ := time.ParseDuration(settings.Notification.TrafficExceededNotifyInterval)
+	if trafficExceededNotifyInterval <= 0 {
+		return fmt.Errorf("traffic_exceeded_notify_interval must be greater than 0")
 	}
 	return nil
 }

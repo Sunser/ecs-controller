@@ -46,20 +46,21 @@ type LoggingConfig struct {
 }
 
 type NotificationConfig struct {
-	Enabled                      bool
-	WeChatCorpID                 string
-	WeChatCorpSecret             string
-	WeChatAgentID                int
-	WeChatToUser                 []string
-	NotifyEvents                 []string
-	ManualRequiredNotifyInterval time.Duration
+	Enabled                       bool
+	WeChatCorpID                  string
+	WeChatCorpSecret              string
+	WeChatAgentID                 int
+	WeChatToUser                  []string
+	NotifyEvents                  []string
+	ManualRequiredNotifyInterval  time.Duration
+	TrafficExceededNotifyInterval time.Duration
 }
 
 type KeepAliveConfig struct {
 	Enabled            bool
 	Target             string
 	TrafficPolicy      string
-	StartCooldown      time.Duration
+	OperationCooldown  time.Duration
 	StopMode           string
 	IncludeInstanceIDs []string
 }
@@ -212,15 +213,16 @@ func defaultConfig() Config {
 		Traffic: TrafficConfig{WarningPercent: 95, ExceededAction: "notify_only"},
 		Logging: LoggingConfig{Level: "info"},
 		Notification: NotificationConfig{
-			NotifyEvents:                 []string{"auto_start", "manual_start", "manual_stop", "manual_required", "traffic_exceeded", "traffic_stop", "error"},
-			ManualRequiredNotifyInterval: time.Hour,
+			NotifyEvents:                  []string{"auto_start", "manual_start", "manual_stop", "manual_required", "traffic_exceeded", "traffic_stop", "error"},
+			ManualRequiredNotifyInterval:  time.Hour,
+			TrafficExceededNotifyInterval: 4 * time.Hour,
 		},
 		KeepAlive: KeepAliveConfig{
-			Enabled:       true,
-			Target:        "spot_only",
-			TrafficPolicy: "manual_only_when_exceeded",
-			StartCooldown: 10 * time.Minute,
-			StopMode:      "StopCharging",
+			Enabled:           true,
+			Target:            "spot_only",
+			TrafficPolicy:     "manual_only_when_exceeded",
+			OperationCooldown: 10 * time.Minute,
+			StopMode:          "StopCharging",
 		},
 	}
 }
@@ -327,6 +329,12 @@ func applyNotification(cfg *NotificationConfig, key, value string) error {
 			return err
 		}
 		cfg.ManualRequiredNotifyInterval = duration
+	case "traffic_exceeded_notify_interval":
+		duration, err := parseDuration(value)
+		if err != nil {
+			return err
+		}
+		cfg.TrafficExceededNotifyInterval = duration
 	default:
 		return fmt.Errorf("未知 notification 字段 %q", key)
 	}
@@ -341,12 +349,12 @@ func applyKeepAlive(cfg *KeepAliveConfig, key, value string) error {
 		cfg.Target = scalar(value)
 	case "traffic_policy":
 		cfg.TrafficPolicy = scalar(value)
-	case "start_cooldown":
+	case "operation_cooldown":
 		duration, err := parseDuration(value)
 		if err != nil {
 			return err
 		}
-		cfg.StartCooldown = duration
+		cfg.OperationCooldown = duration
 	case "stop_mode":
 		cfg.StopMode = scalar(value)
 	case "include_instance_ids":
@@ -403,6 +411,9 @@ func validate(cfg *Config) error {
 	if cfg.Discovery.RegionRefreshInterval <= 0 {
 		return errors.New("discovery.region_refresh_interval 必须大于 0")
 	}
+	if cfg.Discovery.MaxConcurrency <= 0 {
+		return errors.New("discovery.max_concurrency 必须大于 0")
+	}
 	if cfg.Traffic.WarningPercent <= 0 {
 		return errors.New("traffic.warning_percent 必须大于 0")
 	}
@@ -437,6 +448,9 @@ func validate(cfg *Config) error {
 	if cfg.Notification.ManualRequiredNotifyInterval <= 0 {
 		return errors.New("notification.manual_required_notify_interval 必须大于 0")
 	}
+	if cfg.Notification.TrafficExceededNotifyInterval <= 0 {
+		return errors.New("notification.traffic_exceeded_notify_interval 必须大于 0")
+	}
 	if err := validateNotifyEvents(cfg.Notification.NotifyEvents); err != nil {
 		return err
 	}
@@ -457,6 +471,9 @@ func validate(cfg *Config) error {
 	case "spot_only", "all", "include_list", "disabled":
 	default:
 		return fmt.Errorf("不支持的 keep_alive.target: %s", cfg.KeepAlive.Target)
+	}
+	if cfg.KeepAlive.OperationCooldown <= 0 {
+		return errors.New("keep_alive.operation_cooldown 必须大于 0")
 	}
 	for index := range cfg.Accounts {
 		account := &cfg.Accounts[index]
@@ -566,6 +583,11 @@ func applyEnv(cfg *Config, includeGlobal bool) error {
 		} else if ok {
 			cfg.Notification.ManualRequiredNotifyInterval = value
 		}
+		if value, ok, err := lookupEnvDuration("EC_TRAFFIC_EXCEEDED_NOTIFY_INTERVAL"); err != nil {
+			return err
+		} else if ok {
+			cfg.Notification.TrafficExceededNotifyInterval = value
+		}
 		if value, ok := lookupEnvBool("EC_KEEP_ALIVE_ENABLED"); ok {
 			cfg.KeepAlive.Enabled = value
 		}
@@ -575,10 +597,10 @@ func applyEnv(cfg *Config, includeGlobal bool) error {
 		if value, ok := lookupEnvString("EC_TRAFFIC_POLICY"); ok {
 			cfg.KeepAlive.TrafficPolicy = value
 		}
-		if value, ok, err := lookupEnvDuration("EC_START_COOLDOWN"); err != nil {
+		if value, ok, err := lookupEnvDuration("EC_OPERATION_COOLDOWN"); err != nil {
 			return err
 		} else if ok {
-			cfg.KeepAlive.StartCooldown = value
+			cfg.KeepAlive.OperationCooldown = value
 		}
 		if value, ok := lookupEnvString("EC_STOP_MODE"); ok {
 			cfg.KeepAlive.StopMode = value

@@ -34,8 +34,8 @@ func DecideKeepAlive(input PolicyInput) Decision {
 	if input.TrafficPolicy == "pause_when_exceeded" && input.AccountUsagePercent >= input.WarningPercent {
 		return Decision{Kind: DecisionSkip, Reason: "account_traffic_exceeded_paused"}
 	}
-	if input.StartCooldown > 0 && !input.LastStartAt.IsZero() && now.Sub(input.LastStartAt) < input.StartCooldown {
-		return Decision{Kind: DecisionSkip, Reason: "start_cooldown"}
+	if input.OperationCooldown > 0 && !input.LastStartAt.IsZero() && now.Sub(input.LastStartAt) < input.OperationCooldown {
+		return Decision{Kind: DecisionSkip, Reason: "operation_cooldown"}
 	}
 	return Decision{Kind: DecisionStart, Reason: "stopped_target"}
 }

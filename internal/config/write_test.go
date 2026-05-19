@@ -42,12 +42,13 @@ notification:
   touser: ["user-a", "user-b"]
   notify_events: ["auto_start", "error"]
   manual_required_notify_interval: "1h"
+  traffic_exceeded_notify_interval: "4h"
 
 keep_alive:
   enabled: true
   target: "spot_only"
   traffic_policy: "manual_only_when_exceeded"
-  start_cooldown: "10m"
+  operation_cooldown: "10m"
   stop_mode: "StopCharging"
   include_instance_ids: []
 
@@ -74,8 +75,10 @@ accounts:
 	cfg.Notification.Enabled = true
 	cfg.Notification.NotifyEvents = []string{"traffic_exceeded", "traffic_stop", "error"}
 	cfg.Notification.ManualRequiredNotifyInterval = 30 * time.Minute
+	cfg.Notification.TrafficExceededNotifyInterval = 2 * time.Hour
 	cfg.KeepAlive.StopMode = "KeepCharging"
 	cfg.KeepAlive.IncludeInstanceIDs = []string{"i-1", "i-2"}
+	cfg.KeepAlive.OperationCooldown = 15 * time.Minute
 
 	if err := config.WriteGlobalSettings(path, cfg); err != nil {
 		t.Fatalf("WriteGlobalSettings() error = %v", err)
@@ -98,6 +101,8 @@ accounts:
 		`level: "debug"`,
 		`notify_events: ["traffic_exceeded", "traffic_stop", "error"]`,
 		`manual_required_notify_interval: "30m"`,
+		`traffic_exceeded_notify_interval: "2h"`,
+		`operation_cooldown: "15m"`,
 		`stop_mode: "KeepCharging"`,
 		`include_instance_ids: ["i-1", "i-2"]`,
 	} {

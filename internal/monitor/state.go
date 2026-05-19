@@ -15,12 +15,23 @@ type StateStore struct {
 	data PersistentState
 }
 
+const (
+	PauseReasonManualStop               = "manual_stop"
+	PauseReasonManualStopUntilNextMonth = "manual_stop_until_next_month"
+)
+
 type PersistentState struct {
-	ManualPaused                 map[string]bool                  `json:"manual_paused"`
-	LastStartUnix                map[string]int64                 `json:"last_start_unix"`
-	LastOperations               map[string]Operation             `json:"last_operations"`
-	InstanceTraffic              map[string]CachedInstanceTraffic `json:"instance_traffic,omitempty"`
-	LastManualRequiredNotifyUnix map[string]int64                 `json:"last_manual_required_notify_unix,omitempty"`
+	ManualPauses                  map[string]PauseState            `json:"manual_pauses,omitempty"`
+	LastStartUnix                 map[string]int64                 `json:"last_start_unix"`
+	LastOperations                map[string]Operation             `json:"last_operations"`
+	InstanceTraffic               map[string]CachedInstanceTraffic `json:"instance_traffic,omitempty"`
+	LastManualRequiredNotifyUnix  map[string]int64                 `json:"last_manual_required_notify_unix,omitempty"`
+	LastTrafficExceededNotifyUnix map[string]int64                 `json:"last_traffic_exceeded_notify_unix,omitempty"`
+}
+
+type PauseState struct {
+	Reason          string `json:"reason"`
+	ResumeAfterUnix int64  `json:"resume_after_unix,omitempty"`
 }
 
 type CachedInstanceTraffic struct {
@@ -55,20 +66,41 @@ func OpenStateStore(path string) (*StateStore, error) {
 }
 
 func (s *StateStore) IsManualPaused(instanceID string) bool {
+	return s.IsManualPausedAt(instanceID, time.Now())
+}
+
+func (s *StateStore) IsManualPausedAt(instanceID string, at time.Time) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.data.ManualPaused[instanceID]
+	if at.IsZero() {
+		at = time.Now()
+	}
+	return s.manualPauseLocked(instanceID, at)
 }
 
 func (s *StateStore) SetManualPaused(instanceID string, paused bool) error {
+	if !paused {
+		return s.ClearManualPause(instanceID)
+	}
+	return s.SetManualPause(instanceID, PauseState{Reason: PauseReasonManualStop})
+}
+
+func (s *StateStore) SetManualPause(instanceID string, pause PauseState) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.ensureMaps()
-	if paused {
-		s.data.ManualPaused[instanceID] = true
-	} else {
-		delete(s.data.ManualPaused, instanceID)
+	if pause.Reason == "" {
+		pause.Reason = PauseReasonManualStop
 	}
+	s.data.ManualPauses[instanceID] = pause
+	return s.saveLocked()
+}
+
+func (s *StateStore) ClearManualPause(instanceID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ensureMaps()
+	delete(s.data.ManualPauses, instanceID)
 	return s.saveLocked()
 }
 
@@ -120,6 +152,22 @@ func (s *StateStore) AllowManualRequiredNotification(instanceID, reason string, 
 	return true, s.saveLocked()
 }
 
+func (s *StateStore) AllowTrafficExceededNotification(accountName, scope string, at time.Time, interval time.Duration) (bool, error) {
+	if at.IsZero() {
+		at = time.Now()
+	}
+	key := accountName + "|" + scope
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ensureMaps()
+	lastUnix := s.data.LastTrafficExceededNotifyUnix[key]
+	if lastUnix > 0 && interval > 0 && at.Sub(time.Unix(lastUnix, 0)) < interval {
+		return false, nil
+	}
+	s.data.LastTrafficExceededNotifyUnix[key] = at.Unix()
+	return true, s.saveLocked()
+}
+
 func (s *StateStore) CachedInstanceTraffic(instanceID, month string) (CachedInstanceTraffic, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -166,8 +214,8 @@ func (s *StateStore) saveLocked() error {
 }
 
 func (s *StateStore) ensureMaps() {
-	if s.data.ManualPaused == nil {
-		s.data.ManualPaused = map[string]bool{}
+	if s.data.ManualPauses == nil {
+		s.data.ManualPauses = map[string]PauseState{}
 	}
 	if s.data.LastStartUnix == nil {
 		s.data.LastStartUnix = map[string]int64{}
@@ -181,14 +229,39 @@ func (s *StateStore) ensureMaps() {
 	if s.data.LastManualRequiredNotifyUnix == nil {
 		s.data.LastManualRequiredNotifyUnix = map[string]int64{}
 	}
+	if s.data.LastTrafficExceededNotifyUnix == nil {
+		s.data.LastTrafficExceededNotifyUnix = map[string]int64{}
+	}
 }
 
 func emptyState() PersistentState {
 	return PersistentState{
-		ManualPaused:                 map[string]bool{},
-		LastStartUnix:                map[string]int64{},
-		LastOperations:               map[string]Operation{},
-		InstanceTraffic:              map[string]CachedInstanceTraffic{},
-		LastManualRequiredNotifyUnix: map[string]int64{},
+		ManualPauses:                  map[string]PauseState{},
+		LastStartUnix:                 map[string]int64{},
+		LastOperations:                map[string]Operation{},
+		InstanceTraffic:               map[string]CachedInstanceTraffic{},
+		LastManualRequiredNotifyUnix:  map[string]int64{},
+		LastTrafficExceededNotifyUnix: map[string]int64{},
 	}
+}
+
+func (s *StateStore) manualPauseLocked(instanceID string, at time.Time) bool {
+	s.ensureMaps()
+	pause, ok := s.data.ManualPauses[instanceID]
+	if !ok {
+		return false
+	}
+	if pause.ResumeAfterUnix > 0 && !at.Before(time.Unix(pause.ResumeAfterUnix, 0)) {
+		delete(s.data.ManualPauses, instanceID)
+		_ = s.saveLocked()
+		return false
+	}
+	return true
+}
+
+func nextMonthStart(now time.Time) time.Time {
+	if now.IsZero() {
+		now = time.Now()
+	}
+	return time.Date(now.Year(), now.Month()+1, 1, 0, 0, 0, 0, now.Location())
 }

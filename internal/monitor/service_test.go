@@ -89,8 +89,8 @@ func TestManualStopNotificationFieldsOmitConfiguredFallbackDetails(t *testing.T)
 		InstanceChargeType: "PrePaid",
 	}, "i-123", "KeepCharging")
 
-	if fields["停机模式"] != "KeepCharging" {
-		t.Fatalf("stop mode = %q, want KeepCharging", fields["停机模式"])
+	if fields["停机模式"] != "普通关机" {
+		t.Fatalf("stop mode = %q, want 普通关机", fields["停机模式"])
 	}
 	if _, ok := fields["说明"]; ok {
 		t.Fatalf("manual stop notification should omit explanation: %#v", fields)
@@ -128,6 +128,30 @@ func TestTrafficExceededNotificationFieldsMergeScopeAndUsage(t *testing.T) {
 	}
 	if _, ok := fields["使用率"]; ok {
 		t.Fatalf("traffic exceeded notification should not include standalone usage: %#v", fields)
+	}
+}
+
+func TestTrafficStopNotificationFieldsMergeScopeAndUsage(t *testing.T) {
+	fields := trafficStopNotificationFields(InstanceSnapshot{
+		AccountName:         "Huhu",
+		RegionID:            "cn-hongkong",
+		InstanceName:        "example",
+		InstanceID:          "i-1",
+		AccountTrafficScope: aliyun.CDTScopeOverseas,
+		AccountUsagePercent: 98.12,
+	}, aliyun.StoppedModeStopCharging, "流量超阈值关机")
+
+	if fields["事件"] != "流量超阈值关机" {
+		t.Fatalf("event = %q, want 流量超阈值关机", fields["事件"])
+	}
+	if fields["停机模式"] != "节约关机" {
+		t.Fatalf("stop mode = %q, want 节约关机", fields["停机模式"])
+	}
+	if fields["流量分区"] != "非中国内地使用率：98.12%" {
+		t.Fatalf("traffic scope field = %q, want merged scope and usage", fields["流量分区"])
+	}
+	if _, ok := fields["使用率"]; ok {
+		t.Fatalf("traffic stop notification should not include standalone usage: %#v", fields)
 	}
 }
 
@@ -175,7 +199,7 @@ func TestShouldStopForTrafficExceededRequiresExceededRunningTarget(t *testing.T)
 func TestShouldStopForTrafficExceededHonorsRepeatProtection(t *testing.T) {
 	cfg := testConfigWithTrafficPolicy("pause_when_exceeded")
 	cfg.Traffic.ExceededAction = "notify_and_stop"
-	cfg.KeepAlive.StartCooldown = 10 * time.Minute
+	cfg.KeepAlive.OperationCooldown = 10 * time.Minute
 	now := time.Date(2026, 5, 19, 8, 0, 0, 0, time.UTC)
 	snapshot := InstanceSnapshot{
 		InstanceID:          "i-1",
@@ -236,9 +260,11 @@ func TestUpdateSettingsPersistsDiscoveryAndNotificationSettings(t *testing.T) {
 	service := NewService(testConfigWithTrafficPolicy("manual_only_when_exceeded"), state)
 	update := service.Settings()
 	update.Discovery.RegionRefreshInterval = "12h"
+	update.Discovery.MaxConcurrency = 8
 	update.Notification.Enabled = true
 	update.Notification.NotifyEvents = []string{"traffic_exceeded", "traffic_stop", "error"}
 	update.Notification.ManualRequiredNotifyInterval = "30m"
+	update.Notification.TrafficExceededNotifyInterval = "2h"
 	update.Traffic.ExceededAction = "notify_and_stop"
 
 	if err := service.UpdateSettings(update); err != nil {
@@ -249,6 +275,9 @@ func TestUpdateSettingsPersistsDiscoveryAndNotificationSettings(t *testing.T) {
 	if got.Discovery.RegionRefreshInterval != "12h" {
 		t.Fatalf("region refresh interval = %q, want 12h", got.Discovery.RegionRefreshInterval)
 	}
+	if got.Discovery.MaxConcurrency != 8 {
+		t.Fatalf("max concurrency = %d, want 8", got.Discovery.MaxConcurrency)
+	}
 	if !got.Notification.Enabled {
 		t.Fatal("notification enabled = false, want true")
 	}
@@ -257,6 +286,9 @@ func TestUpdateSettingsPersistsDiscoveryAndNotificationSettings(t *testing.T) {
 	}
 	if got.Notification.ManualRequiredNotifyInterval != "30m" {
 		t.Fatalf("manual required notify interval = %q, want 30m", got.Notification.ManualRequiredNotifyInterval)
+	}
+	if got.Notification.TrafficExceededNotifyInterval != "2h" {
+		t.Fatalf("traffic exceeded notify interval = %q, want 2h", got.Notification.TrafficExceededNotifyInterval)
 	}
 	if got.Traffic.ExceededAction != "notify_and_stop" {
 		t.Fatalf("traffic exceeded action = %q, want notify_and_stop", got.Traffic.ExceededAction)
@@ -294,12 +326,13 @@ notification:
   touser: []
   notify_events: ["auto_start", "error"]
   manual_required_notify_interval: "1h"
+  traffic_exceeded_notify_interval: "4h"
 
 keep_alive:
   enabled: true
   target: "spot_only"
   traffic_policy: "manual_only_when_exceeded"
-  start_cooldown: "10m"
+  operation_cooldown: "10m"
   stop_mode: "StopCharging"
   include_instance_ids: []
 
@@ -330,6 +363,7 @@ accounts:
 	update.Traffic.WarningPercent = 90
 	update.Traffic.ExceededAction = "notify_and_stop"
 	update.Notification.ManualRequiredNotifyInterval = "45m"
+	update.Notification.TrafficExceededNotifyInterval = "3h"
 
 	if err := service.UpdateSettings(update); err != nil {
 		t.Fatalf("UpdateSettings() error = %v", err)
@@ -348,6 +382,9 @@ accounts:
 	}
 	if !strings.Contains(text, `manual_required_notify_interval: "45m"`) {
 		t.Fatalf("manual required notify interval was not updated:\n%s", text)
+	}
+	if !strings.Contains(text, `traffic_exceeded_notify_interval: "3h"`) {
+		t.Fatalf("traffic exceeded notify interval was not updated:\n%s", text)
 	}
 	if !strings.Contains(text, `password: "${EC_PASSWORD}"`) || strings.Contains(text, "expanded-sk") {
 		t.Fatalf("config did not preserve secret placeholders:\n%s", text)
@@ -369,15 +406,16 @@ func testConfigWithTrafficPolicy(policy string) config.Config {
 		Traffic: config.TrafficConfig{WarningPercent: 95, ExceededAction: "notify_only"},
 		Logging: config.LoggingConfig{Level: "info"},
 		Notification: config.NotificationConfig{
-			NotifyEvents:                 []string{"auto_start", "manual_start", "manual_stop", "manual_required", "traffic_exceeded", "traffic_stop", "error"},
-			ManualRequiredNotifyInterval: time.Hour,
+			NotifyEvents:                  []string{"auto_start", "manual_start", "manual_stop", "manual_required", "traffic_exceeded", "traffic_stop", "error"},
+			ManualRequiredNotifyInterval:  time.Hour,
+			TrafficExceededNotifyInterval: 4 * time.Hour,
 		},
 		KeepAlive: config.KeepAliveConfig{
-			Enabled:       true,
-			Target:        "spot_only",
-			TrafficPolicy: policy,
-			StartCooldown: 10 * time.Minute,
-			StopMode:      "StopCharging",
+			Enabled:           true,
+			Target:            "spot_only",
+			TrafficPolicy:     policy,
+			OperationCooldown: 10 * time.Minute,
+			StopMode:          "StopCharging",
 		},
 		Accounts: []config.AccountConfig{
 			{

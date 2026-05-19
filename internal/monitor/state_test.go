@@ -83,3 +83,80 @@ func TestStateStoreThrottlesManualRequiredNotificationsByInstanceAndReason(t *te
 		t.Fatal("same instance and reason after interval allowed = false, want true")
 	}
 }
+
+func TestStateStoreThrottlesTrafficExceededNotificationsByAccountAndScope(t *testing.T) {
+	path := t.TempDir() + "/state.json"
+	store, err := OpenStateStore(path)
+	if err != nil {
+		t.Fatalf("OpenStateStore() error = %v", err)
+	}
+	now := time.Date(2026, 5, 19, 8, 0, 0, 0, time.UTC)
+
+	allowed, err := store.AllowTrafficExceededNotification("Huhu", "mainland", now, 4*time.Hour)
+	if err != nil {
+		t.Fatalf("AllowTrafficExceededNotification() error = %v", err)
+	}
+	if !allowed {
+		t.Fatal("first traffic exceeded notification allowed = false, want true")
+	}
+
+	allowed, err = store.AllowTrafficExceededNotification("Huhu", "mainland", now.Add(2*time.Hour), 4*time.Hour)
+	if err != nil {
+		t.Fatalf("AllowTrafficExceededNotification() second error = %v", err)
+	}
+	if allowed {
+		t.Fatal("same account and scope inside interval allowed = true, want false")
+	}
+
+	allowed, err = store.AllowTrafficExceededNotification("Huhu", "overseas", now.Add(2*time.Hour), 4*time.Hour)
+	if err != nil {
+		t.Fatalf("AllowTrafficExceededNotification() different scope error = %v", err)
+	}
+	if !allowed {
+		t.Fatal("different scope allowed = false, want true")
+	}
+
+	reopened, err := OpenStateStore(path)
+	if err != nil {
+		t.Fatalf("OpenStateStore() reopen error = %v", err)
+	}
+	allowed, err = reopened.AllowTrafficExceededNotification("Huhu", "mainland", now.Add(5*time.Hour), 4*time.Hour)
+	if err != nil {
+		t.Fatalf("AllowTrafficExceededNotification() after interval error = %v", err)
+	}
+	if !allowed {
+		t.Fatal("same account and scope after interval allowed = false, want true")
+	}
+}
+
+func TestStateStoreSupportsManualPauseUntilNextMonth(t *testing.T) {
+	path := t.TempDir() + "/state.json"
+	store, err := OpenStateStore(path)
+	if err != nil {
+		t.Fatalf("OpenStateStore() error = %v", err)
+	}
+	location := time.FixedZone("CST", 8*60*60)
+	now := time.Date(2026, 5, 19, 8, 0, 0, 0, location)
+	resumeAt := nextMonthStart(now)
+
+	if err := store.SetManualPause("i-next-month", PauseState{
+		Reason:          PauseReasonManualStopUntilNextMonth,
+		ResumeAfterUnix: resumeAt.Unix(),
+	}); err != nil {
+		t.Fatalf("SetManualPause() error = %v", err)
+	}
+	if !store.IsManualPausedAt("i-next-month", now) {
+		t.Fatal("pause before next month = false, want true")
+	}
+
+	reopened, err := OpenStateStore(path)
+	if err != nil {
+		t.Fatalf("OpenStateStore() reopen error = %v", err)
+	}
+	if !reopened.IsManualPausedAt("i-next-month", now) {
+		t.Fatal("persisted pause before next month = false, want true")
+	}
+	if reopened.IsManualPausedAt("i-next-month", resumeAt) {
+		t.Fatal("expired pause after reopening = true, want false")
+	}
+}

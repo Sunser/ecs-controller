@@ -58,7 +58,7 @@ func TestStoppedSpotStartsWhenUnderLimitAndNotCoolingDown(t *testing.T) {
 		WarningPercent:          95,
 		AccountUsagePercent:     10,
 		AccountTrafficAvailable: true,
-		StartCooldown:           10 * time.Minute,
+		OperationCooldown:       10 * time.Minute,
 		Now:                     time.Unix(1000, 0),
 		Instance: monitor.InstanceSnapshot{
 			InstanceID: "i-1",

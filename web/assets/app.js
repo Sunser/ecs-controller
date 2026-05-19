@@ -13,7 +13,7 @@ const NOTIFY_EVENTS = [
   {value: 'manual_stop', label: '手工关机'},
   {value: 'manual_required', label: '等待人工决策'},
   {value: 'traffic_exceeded', label: '流量超阈值'},
-  {value: 'traffic_stop', label: '流量保护关机'},
+  {value: 'traffic_stop', label: '流量超阈值关机'},
   {value: 'error', label: '错误告警'}
 ];
 
@@ -32,6 +32,7 @@ document.getElementById('trafficExceededAction').onchange = renderOptionHelp;
 document.getElementById('stopMode').onchange = renderOptionHelp;
 document.getElementById('notificationEnabled').onchange = renderOptionHelp;
 document.getElementById('manualRequiredNotifyInterval').onchange = renderOptionHelp;
+document.getElementById('trafficExceededNotifyInterval').onchange = renderOptionHelp;
 document.querySelectorAll('.tab').forEach(function(button) {
   button.onclick = function() { switchTab(button.dataset.tab); };
 });
@@ -181,18 +182,20 @@ function renderInstanceRows(rows) {
 function renderSettings(settings) {
   document.getElementById('refreshInterval').value = settings.server.refresh_interval;
   document.getElementById('regionRefreshInterval').value = (settings.discovery || {}).region_refresh_interval || '24h';
+  document.getElementById('maxConcurrency').value = (settings.discovery || {}).max_concurrency || 4;
   document.getElementById('requestTimeout').value = settings.server.request_timeout;
   document.getElementById('warningPercent').value = settings.traffic.warning_percent;
   document.getElementById('trafficExceededAction').value = settings.traffic.exceeded_action || 'notify_only';
   document.getElementById('keepAliveEnabled').value = String(settings.keep_alive.enabled);
   document.getElementById('keepAliveTarget').value = settings.keep_alive.target;
   document.getElementById('trafficPolicy').value = settings.keep_alive.traffic_policy;
-  document.getElementById('startCooldown').value = settings.keep_alive.start_cooldown;
+  document.getElementById('operationCooldown').value = settings.keep_alive.operation_cooldown;
   document.getElementById('stopMode').value = settings.keep_alive.stop_mode || 'StopCharging';
   document.getElementById('includeIds').value = (settings.keep_alive.include_instance_ids || []).join('\n');
   document.getElementById('logLevel').value = settings.logging.level;
   document.getElementById('notificationEnabled').value = String(settings.notification.enabled);
   document.getElementById('manualRequiredNotifyInterval').value = settings.notification.manual_required_notify_interval || '1h';
+  document.getElementById('trafficExceededNotifyInterval').value = settings.notification.traffic_exceeded_notify_interval || '4h';
   renderNotifyEventPicker(settings.notification.notify_events || []);
   renderOptionHelp();
 }
@@ -203,19 +206,21 @@ async function saveSettings() {
   update.server.refresh_interval = document.getElementById('refreshInterval').value;
   update.discovery = update.discovery || {};
   update.discovery.region_refresh_interval = document.getElementById('regionRefreshInterval').value;
+  update.discovery.max_concurrency = Number(document.getElementById('maxConcurrency').value || 4);
   update.server.request_timeout = document.getElementById('requestTimeout').value;
   update.traffic.warning_percent = Number(document.getElementById('warningPercent').value);
   update.traffic.exceeded_action = document.getElementById('trafficExceededAction').value;
   update.keep_alive.enabled = document.getElementById('keepAliveEnabled').value === 'true';
   update.keep_alive.target = document.getElementById('keepAliveTarget').value;
   update.keep_alive.traffic_policy = document.getElementById('trafficPolicy').value;
-  update.keep_alive.start_cooldown = document.getElementById('startCooldown').value;
+  update.keep_alive.operation_cooldown = document.getElementById('operationCooldown').value;
   update.keep_alive.stop_mode = document.getElementById('stopMode').value;
   update.keep_alive.include_instance_ids = splitLines(document.getElementById('includeIds').value);
   update.logging.level = document.getElementById('logLevel').value;
   update.notification.enabled = document.getElementById('notificationEnabled').value === 'true';
   update.notification.notify_events = selectedNotifyEvents();
   update.notification.manual_required_notify_interval = document.getElementById('manualRequiredNotifyInterval').value;
+  update.notification.traffic_exceeded_notify_interval = document.getElementById('trafficExceededNotifyInterval').value;
   const saved = await api('/api/settings', {
     method: 'PUT',
     headers: {'Content-Type': 'application/json'},
@@ -229,11 +234,18 @@ async function saveSettings() {
   }
 }
 
-async function action(row, op) {
+async function action(row, op, extra) {
   const instanceId = row.instance_id || '';
   const options = {method: 'POST'};
   if (op === 'stop') {
-    if (!confirm('确认关机 ' + instanceId + '？模式：' + effectiveStopModeLabel(row, defaultStopMode()) + '。关机后该实例会暂停自动保活。')) return;
+    const pauseMode = extra && extra.pause_mode ? extra.pause_mode : 'pause';
+    const pauseText = pauseMode === 'pause_until_next_month' ? '下月自动恢复保活' : '保持暂停保活';
+    if (!confirm('确认关机 ' + instanceId + '？模式：' + effectiveStopModeLabel(row, defaultStopMode()) + '。关机后将' + pauseText + '。')) return;
+    options.headers = {'Content-Type': 'application/json'};
+    options.body = JSON.stringify({
+      stop_mode: defaultStopMode(),
+      pause_mode: pauseMode
+    });
   }
   const result = await api('/api/instances/' + encodeURIComponent(instanceId) + '/' + op, options);
   if (result) {
@@ -252,8 +264,12 @@ function actionCell(row) {
   const stop = document.createElement('button');
   stop.className = 'danger';
   stop.textContent = '关机';
-  stop.onclick = function() { action(row, 'stop'); };
+  const stopPauseMode = document.createElement('select');
+  stopPauseMode.className = 'action-select';
+  stopPauseMode.innerHTML = '<option value="pause">保持暂停</option><option value="pause_until_next_month">下月恢复保活</option>';
+  stop.onclick = function() { action(row, 'stop', {pause_mode: stopPauseMode.value}); };
   box.appendChild(start);
+  box.appendChild(stopPauseMode);
   box.appendChild(stop);
   td.appendChild(box);
   return td;
@@ -504,6 +520,7 @@ function renderOptionHelp() {
   const stopMode = document.getElementById('stopMode').value;
   const notificationEnabled = document.getElementById('notificationEnabled').value === 'true';
   const manualRequiredNotifyInterval = document.getElementById('manualRequiredNotifyInterval').value || '1h';
+  const trafficExceededNotifyInterval = document.getElementById('trafficExceededNotifyInterval').value || '4h';
   const targetText = {
     disabled: '关闭后台自动保活，仅保留查看和手工操作。',
     all: '所有发现到的实例都参与保活，请确认不会误启非抢占式机器。',
@@ -531,10 +548,12 @@ function renderOptionHelp() {
     '<div class="help-list">' +
     '<div class="help-row"><strong>后台检查间隔</strong><span>控制后台多久刷新一次账号流量、实例状态和保活决策；页面右上角可以单独选择自动刷新间隔。</span></div>' +
     '<div class="help-row"><strong>地域缓存时间</strong><span>账号地域列表会缓存一段时间，避免每轮都调用 DescribeRegions。新开地域后可以缩短这个值或重启服务。</span></div>' +
-    '<div class="help-row"><strong>重复启动保护间隔</strong><span>同一实例启动后，在这个时间内不会再次自动提交启动请求，防止重复调用 StartInstance。后台检查频率由刷新间隔控制。</span></div>' +
+    '<div class="help-row"><strong>实例处理并发</strong><span>每个地域内同时读取实例流量和执行保活判断的最大并发数，数值越高 API 压力越大。</span></div>' +
+    '<div class="help-row"><strong>重复操作保护间隔</strong><span>同一实例启动或流量超阈值关机后，在这个时间内不会重复提交同类操作，防止短时间反复调用云 API。</span></div>' +
     '<div class="help-row"><strong>企业微信通知</strong><span>' + (notificationEnabled ? '已启用，通知事件按下方点选项发送。' : '未启用，开启后按点选事件发送企业微信应用消息。') + '</span></div>' +
     '<div class="help-row"><strong>人工决策通知间隔</strong><span>同一实例同一原因在 ' + esc(manualRequiredNotifyInterval) + ' 内只发送一次等待人工决策通知，避免长期无人处理时反复提醒。</span></div>' +
-    '<div class="help-row"><strong>通知事件</strong><span>后台自动启动、手工操作、等待人工决策、流量告警、流量保护关机和错误告警可以分别选择。</span></div>' +
+    '<div class="help-row"><strong>流量告警通知间隔</strong><span>同一账号同一流量分区在 ' + esc(trafficExceededNotifyInterval) + ' 内只发送一次流量超阈值通知。</span></div>' +
+    '<div class="help-row"><strong>通知事件</strong><span>后台自动启动、手工操作、等待人工决策、流量告警、流量超阈值关机和错误告警可以分别选择。</span></div>' +
     '</div>';
 }
 
@@ -629,7 +648,7 @@ function reasonLabel(value) {
     account_traffic_exceeded_paused: '实例所属流量额度池已超过阈值，后台暂停自动启动',
     account_traffic_unknown_manual_required: '账号流量读取失败，交给人工决策',
     account_traffic_unknown_paused: '账号流量读取失败，后台暂停自动启动',
-    start_cooldown: '距离上次启动还在重复启动保护间隔内',
+    operation_cooldown: '距离上次操作还在重复操作保护间隔内',
     stopped_target: '已停机且符合保活条件'
   }[value] || value || '-';
 }
@@ -648,7 +667,7 @@ function actionLabel(value) {
     manual_start: '手工启动',
     manual_stop: '手工关机',
     auto_start: '后台自动启动',
-    traffic_stop: '流量保护关机'
+    traffic_stop: '流量超阈值关机'
   }[value] || value || '-';
 }
 
@@ -705,11 +724,13 @@ function logTaskLabel(value) {
     'auto start decision': '准备自动启动',
     'auto start failed': '自动启动失败',
     'auto start submitted': '自动启动已提交',
-    'traffic stop failed': '流量保护关机失败',
-    'traffic stop submitted': '流量保护关机已提交',
+    'traffic stop failed': '流量超阈值关机失败',
+    'traffic stop submitted': '流量超阈值关机已提交',
     'manual decision required': '等待人工决策',
     'manual required notification suppressed': '人工决策通知已限流',
     'manual required notification throttle failed': '人工决策通知限流失败',
+    'traffic exceeded notification suppressed': '流量告警通知已限流',
+    'traffic exceeded notification throttle failed': '流量告警通知限流失败',
     'decision skipped': '跳过保活动作',
     'check finished': '保活检查完成',
     'message sent': '消息已发送',
@@ -756,6 +777,9 @@ function fieldLabel(key) {
     tz: '时区',
     stop_mode: '停机模式',
     configured_stop_mode: '配置停机模式',
+    pause_mode: '暂停模式',
+    resume_after: '恢复时间',
+    scope: '流量分区',
     used: '使用量',
     metric: '指标',
     points: '点数'
@@ -778,6 +802,7 @@ function fieldValue(key, value) {
   if (key === 'reason') return reasonLabel(value);
   if (key === 'status') return statusLabel(value);
   if (key === 'stop_mode' || key === 'configured_stop_mode') return stopModeLabel(value);
+  if (key === 'pause_mode') return {pause: '保持暂停', pause_until_next_month: '下月恢复保活'}[value] || value;
   return String(value);
 }
 

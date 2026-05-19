@@ -142,7 +142,8 @@
             <label>后台检查间隔<input id="refreshInterval" placeholder="5m"></label>
             <label>地域缓存时间<input id="regionRefreshInterval" placeholder="24h"></label>
             <label>API 请求超时<input id="requestTimeout" placeholder="20s"></label>
-            <label>重复启动保护间隔<input id="startCooldown" placeholder="10m"></label>
+            <label>实例处理并发<input id="maxConcurrency" type="number" min="1" step="1" placeholder="4"></label>
+            <label>重复操作保护间隔<input id="operationCooldown" placeholder="10m"></label>
             <label>日志级别<select id="logLevel"><option value="info">常规日志（info）</option><option value="debug">调试日志（debug）</option><option value="warn">只看警告（warn）</option><option value="error">只看错误（error）</option></select></label>
           </div>
         </div>
@@ -151,6 +152,7 @@
           <div class="form-grid">
             <label>启用通知<select id="notificationEnabled"><option value="false">关闭</option><option value="true">启用</option></select></label>
             <label>人工决策通知间隔<input id="manualRequiredNotifyInterval" placeholder="1h"></label>
+            <label>流量告警通知间隔<input id="trafficExceededNotifyInterval" placeholder="4h"></label>
             <div class="wide-field">
               <div class="field-title">通知事件</div>
               <div class="event-picker" id="notifyEvents"></div>

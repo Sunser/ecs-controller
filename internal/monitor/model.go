@@ -99,7 +99,7 @@ type PolicyInput struct {
 	AccountTrafficAvailable bool
 	IncludeInstanceIDs      []string
 	ManualPaused            bool
-	StartCooldown           time.Duration
+	OperationCooldown       time.Duration
 	LastStartAt             time.Time
 	Now                     time.Time
 	Instance                InstanceSnapshot

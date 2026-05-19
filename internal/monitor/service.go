@@ -44,6 +44,18 @@ type keepAliveCheckSummary struct {
 	Skipped        int
 }
 
+type instanceRefreshResult struct {
+	Snapshot       InstanceSnapshot
+	Location       instanceLocation
+	Decision       Decision
+	TrafficStopped bool
+}
+
+const (
+	ManualStopPauseHold           = "pause"
+	ManualStopPauseUntilNextMonth = "pause_until_next_month"
+)
+
 func (s *keepAliveCheckSummary) add(decision Decision) {
 	s.Checked++
 	switch decision.Kind {
@@ -117,7 +129,7 @@ func (s *Service) Refresh(ctx context.Context) error {
 		accountTraffic := s.loadAccountTraffic(ctx, client)
 		accountTrafficAvailable := accountTraffic.Source == "cdt"
 		accountScopes := trafficScopes(accountTraffic, account.MainlandTrafficLimit, account.OverseasTrafficLimit)
-		maxScope, hasMaxScope := maxTrafficScope(accountScopes)
+		maxScope, _ := maxTrafficScope(accountScopes)
 		accountUsagePercent := maxScope.UsagePercent
 		accountSnapshot := AccountSnapshot{
 			AccountName:      account.Name,
@@ -146,14 +158,13 @@ func (s *Service) Refresh(ctx context.Context) error {
 					"account": account.Name,
 					"usage":   fmt.Sprintf("%.2f%%", accountUsagePercent),
 				})
-				if hasMaxScope {
-					s.notifyEvent(ctx, "traffic_exceeded", "流量超阈值", trafficExceededNotificationFields(account.Name, maxScope))
-				} else {
-					s.notifyEvent(ctx, "traffic_exceeded", "流量超阈值", map[string]string{
-						"账号":  account.Name,
-						"事件":  "流量超阈值",
-						"使用率": fmt.Sprintf("%.2f%%", accountUsagePercent),
-					})
+				for _, scope := range accountScopes {
+					if scope.UsagePercent < cfg.Traffic.WarningPercent {
+						continue
+					}
+					if s.trafficExceededNotificationAllowed(account.Name, scope.Key) {
+						s.notifyEvent(ctx, "traffic_exceeded", "流量超阈值", trafficExceededNotificationFields(account.Name, scope))
+					}
 				}
 			}
 		} else {
@@ -185,76 +196,13 @@ func (s *Service) Refresh(ctx context.Context) error {
 				next.Errors = append(next.Errors, fmt.Sprintf("[%s/%s] describe network interfaces failed: %v", account.Name, region.RegionID, eniErr))
 				applog.Warn("aliyun", "describe network interfaces failed", map[string]string{"account": account.Name, "region": region.RegionID, "error": eniErr.Error()})
 			}
-			for _, instance := range instances {
-				if len(eniIPv6[instance.InstanceID]) > 0 {
-					instance.IPv6Addresses = mergeStrings(instance.IPv6Addresses, eniIPv6[instance.InstanceID])
+			for _, result := range s.refreshInstances(ctx, client, cfg, account, region, instances, eniIPv6, accountTraffic, accountTrafficAvailable, now) {
+				keepAliveSummary.add(result.Decision)
+				if result.TrafficStopped {
+					keepAliveSummary.TrafficStops++
 				}
-				instanceTraffic := s.loadInstanceTraffic(ctx, client, account.Name, instance, now)
-				trafficScope, regionAccountTrafficGB, regionAccountLimitGB, regionAccountUsagePercent := regionTraffic(accountTraffic, instance.RegionID, account.MainlandTrafficLimit, account.OverseasTrafficLimit)
-
-				manualPaused := s.state.IsManualPaused(instance.InstanceID)
-				snapshot := InstanceSnapshot{
-					AccountName:           account.Name,
-					AccountSite:           account.Site,
-					InstanceID:            instance.InstanceID,
-					InstanceName:          instance.InstanceName,
-					RegionID:              instance.RegionID,
-					RegionName:            instance.RegionName,
-					Status:                instance.Status,
-					Spot:                  instance.IsSpot(),
-					InstanceType:          instance.InstanceType,
-					InstanceChargeType:    instance.InstanceChargeType,
-					CPU:                   instance.CPU,
-					MemoryMB:              instance.Memory,
-					InternetBandwidthIn:   instance.InternetMaxBandwidthIn,
-					InternetBandwidthOut:  instance.InternetMaxBandwidthOut,
-					PublicIP:              instance.PublicIP,
-					IPv6Addresses:         append([]string(nil), instance.IPv6Addresses...),
-					PrivateIP:             instance.PrivateIP,
-					InstanceTrafficGB:     instanceTraffic.GB,
-					InstanceTrafficSource: instanceTraffic.Source,
-					InstanceTrafficMetric: instanceTraffic.Metric,
-					InstanceTrafficPoints: instanceTraffic.Points,
-					InstanceTrafficError:  trafficErrorText(instanceTraffic),
-					AccountTrafficScope:   trafficScope,
-					AccountTrafficGB:      regionAccountTrafficGB,
-					AccountLimitGB:        regionAccountLimitGB,
-					AccountUsagePercent:   regionAccountUsagePercent,
-					ManualPaused:          manualPaused,
-					LastOperation:         s.state.LastOperation(instance.InstanceID),
-					UpdatedAt:             now,
-				}
-				decision := DecideKeepAlive(PolicyInput{
-					Enabled:                 cfg.KeepAlive.Enabled,
-					Target:                  cfg.KeepAlive.Target,
-					TrafficPolicy:           cfg.KeepAlive.TrafficPolicy,
-					WarningPercent:          cfg.Traffic.WarningPercent,
-					AccountUsagePercent:     regionAccountUsagePercent,
-					AccountTrafficAvailable: accountTrafficAvailable,
-					IncludeInstanceIDs:      cfg.KeepAlive.IncludeInstanceIDs,
-					ManualPaused:            manualPaused,
-					StartCooldown:           cfg.KeepAlive.StartCooldown,
-					LastStartAt:             s.state.LastStartAt(instance.InstanceID),
-					Now:                     now,
-					Instance:                snapshot,
-				})
-				snapshot.KeepAliveDecision = decision
-				keepAliveSummary.add(decision)
-				s.handleDecision(ctx, account.Name, snapshot, decision)
-				if decision.Kind == DecisionStart {
-					s.autoStart(ctx, client, snapshot)
-					snapshot.LastOperation = s.state.LastOperation(instance.InstanceID)
-				}
-				if shouldStopForTrafficExceeded(cfg, snapshot, accountTrafficAvailable, now) {
-					if s.autoStopForTrafficExceeded(ctx, client, cfg, snapshot) {
-						keepAliveSummary.TrafficStops++
-						snapshot.Status = "Stopping"
-					}
-					snapshot.LastOperation = s.state.LastOperation(instance.InstanceID)
-				}
-
-				next.Instances = append(next.Instances, snapshot)
-				locations[instance.InstanceID] = instanceLocation{Account: account, Region: region}
+				next.Instances = append(next.Instances, result.Snapshot)
+				locations[result.Snapshot.InstanceID] = result.Location
 			}
 		}
 	}
@@ -279,6 +227,105 @@ func (s *Service) Refresh(ctx context.Context) error {
 	return nil
 }
 
+func (s *Service) refreshInstances(ctx context.Context, client *aliyun.Client, cfg config.Config, account config.AccountConfig, region aliyun.Region, instances []aliyun.Instance, eniIPv6 map[string][]string, accountTraffic aliyun.TrafficResult, accountTrafficAvailable bool, now time.Time) []instanceRefreshResult {
+	if len(instances) == 0 {
+		return nil
+	}
+	limit := cfg.Discovery.MaxConcurrency
+	if limit <= 0 {
+		limit = 1
+	}
+	results := make([]instanceRefreshResult, len(instances))
+	sem := make(chan struct{}, limit)
+	var wg sync.WaitGroup
+	for index, instance := range instances {
+		index, instance := index, instance
+		sem <- struct{}{}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer func() { <-sem }()
+			results[index] = s.refreshInstance(ctx, client, cfg, account, region, instance, eniIPv6, accountTraffic, accountTrafficAvailable, now)
+		}()
+	}
+	wg.Wait()
+	return results
+}
+
+func (s *Service) refreshInstance(ctx context.Context, client *aliyun.Client, cfg config.Config, account config.AccountConfig, region aliyun.Region, instance aliyun.Instance, eniIPv6 map[string][]string, accountTraffic aliyun.TrafficResult, accountTrafficAvailable bool, now time.Time) instanceRefreshResult {
+	if len(eniIPv6[instance.InstanceID]) > 0 {
+		instance.IPv6Addresses = mergeStrings(instance.IPv6Addresses, eniIPv6[instance.InstanceID])
+	}
+	instanceTraffic := s.loadInstanceTraffic(ctx, client, account.Name, instance, now)
+	trafficScope, regionAccountTrafficGB, regionAccountLimitGB, regionAccountUsagePercent := regionTraffic(accountTraffic, instance.RegionID, account.MainlandTrafficLimit, account.OverseasTrafficLimit)
+	manualPaused := s.state.IsManualPausedAt(instance.InstanceID, now)
+	snapshot := InstanceSnapshot{
+		AccountName:           account.Name,
+		AccountSite:           account.Site,
+		InstanceID:            instance.InstanceID,
+		InstanceName:          instance.InstanceName,
+		RegionID:              instance.RegionID,
+		RegionName:            instance.RegionName,
+		Status:                instance.Status,
+		Spot:                  instance.IsSpot(),
+		InstanceType:          instance.InstanceType,
+		InstanceChargeType:    instance.InstanceChargeType,
+		CPU:                   instance.CPU,
+		MemoryMB:              instance.Memory,
+		InternetBandwidthIn:   instance.InternetMaxBandwidthIn,
+		InternetBandwidthOut:  instance.InternetMaxBandwidthOut,
+		PublicIP:              instance.PublicIP,
+		IPv6Addresses:         append([]string(nil), instance.IPv6Addresses...),
+		PrivateIP:             instance.PrivateIP,
+		InstanceTrafficGB:     instanceTraffic.GB,
+		InstanceTrafficSource: instanceTraffic.Source,
+		InstanceTrafficMetric: instanceTraffic.Metric,
+		InstanceTrafficPoints: instanceTraffic.Points,
+		InstanceTrafficError:  trafficErrorText(instanceTraffic),
+		AccountTrafficScope:   trafficScope,
+		AccountTrafficGB:      regionAccountTrafficGB,
+		AccountLimitGB:        regionAccountLimitGB,
+		AccountUsagePercent:   regionAccountUsagePercent,
+		ManualPaused:          manualPaused,
+		LastOperation:         s.state.LastOperation(instance.InstanceID),
+		UpdatedAt:             now,
+	}
+	decision := DecideKeepAlive(PolicyInput{
+		Enabled:                 cfg.KeepAlive.Enabled,
+		Target:                  cfg.KeepAlive.Target,
+		TrafficPolicy:           cfg.KeepAlive.TrafficPolicy,
+		WarningPercent:          cfg.Traffic.WarningPercent,
+		AccountUsagePercent:     regionAccountUsagePercent,
+		AccountTrafficAvailable: accountTrafficAvailable,
+		IncludeInstanceIDs:      cfg.KeepAlive.IncludeInstanceIDs,
+		ManualPaused:            manualPaused,
+		OperationCooldown:       cfg.KeepAlive.OperationCooldown,
+		LastStartAt:             s.state.LastStartAt(instance.InstanceID),
+		Now:                     now,
+		Instance:                snapshot,
+	})
+	snapshot.KeepAliveDecision = decision
+	s.handleDecision(ctx, account.Name, snapshot, decision)
+	if decision.Kind == DecisionStart {
+		s.autoStart(ctx, client, snapshot)
+		snapshot.LastOperation = s.state.LastOperation(instance.InstanceID)
+	}
+	trafficStopped := false
+	if shouldStopForTrafficExceeded(cfg, snapshot, accountTrafficAvailable, now) {
+		if s.autoStopForTrafficExceeded(ctx, client, cfg, snapshot) {
+			trafficStopped = true
+			snapshot.Status = "Stopping"
+		}
+		snapshot.LastOperation = s.state.LastOperation(instance.InstanceID)
+	}
+	return instanceRefreshResult{
+		Snapshot:       snapshot,
+		Location:       instanceLocation{Account: account, Region: region},
+		Decision:       decision,
+		TrafficStopped: trafficStopped,
+	}
+}
+
 func (s *Service) ManualStart(ctx context.Context, instanceID string) error {
 	location, err := s.location(instanceID)
 	if err != nil {
@@ -287,9 +334,9 @@ func (s *Service) ManualStart(ctx context.Context, instanceID string) error {
 	cfg := s.Config()
 	now := time.Now()
 	lastStart := s.state.LastStartAt(instanceID)
-	if cfg.KeepAlive.StartCooldown > 0 && !lastStart.IsZero() && now.Sub(lastStart) < cfg.KeepAlive.StartCooldown {
+	if cfg.KeepAlive.OperationCooldown > 0 && !lastStart.IsZero() && now.Sub(lastStart) < cfg.KeepAlive.OperationCooldown {
 		applog.Warn("keepalive", "manual start blocked by repeat protection", map[string]string{"instance": instanceID})
-		return fmt.Errorf("instance is still in start cooldown")
+		return fmt.Errorf("instance is still in operation cooldown")
 	}
 
 	client := aliyun.NewClient(location.Account.AccessKeyID, location.Account.AccessKeySecret, location.Account.Site, cfg.Server.RequestTimeout)
@@ -311,7 +358,7 @@ func (s *Service) ManualStart(ctx context.Context, instanceID string) error {
 	return nil
 }
 
-func (s *Service) ManualStop(ctx context.Context, instanceID, requestedStopMode string) error {
+func (s *Service) ManualStop(ctx context.Context, instanceID, requestedStopMode, pauseMode string) error {
 	location, err := s.location(instanceID)
 	if err != nil {
 		return err
@@ -327,6 +374,12 @@ func (s *Service) ManualStop(ctx context.Context, instanceID, requestedStopMode 
 	if configuredStopMode != aliyun.StoppedModeStopCharging && configuredStopMode != aliyun.StoppedModeKeepCharging {
 		return fmt.Errorf("unsupported stop mode: %s", configuredStopMode)
 	}
+	if strings.TrimSpace(pauseMode) == "" {
+		pauseMode = ManualStopPauseHold
+	}
+	if pauseMode != ManualStopPauseHold && pauseMode != ManualStopPauseUntilNextMonth {
+		return fmt.Errorf("unsupported pause mode: %s", pauseMode)
+	}
 	stopMode := effectiveStopMode(configuredStopMode, instance)
 	if err := client.StopInstance(ctx, location.Region.RegionID, instanceID, stopMode); err != nil {
 		_ = s.state.RecordOperation(instanceID, Operation{Action: "manual_stop", Success: false, Message: err.Error(), OccurredAt: now})
@@ -336,9 +389,17 @@ func (s *Service) ManualStop(ctx context.Context, instanceID, requestedStopMode 
 		s.notifyEvent(ctx, "error", "手工关机失败", fields)
 		return err
 	}
-	_ = s.state.SetManualPaused(instanceID, true)
+	pause := PauseState{Reason: PauseReasonManualStop}
+	if pauseMode == ManualStopPauseUntilNextMonth {
+		resumeAt := nextMonthStart(now.In(time.Local))
+		pause = PauseState{Reason: PauseReasonManualStopUntilNextMonth, ResumeAfterUnix: resumeAt.Unix()}
+	}
+	_ = s.state.SetManualPause(instanceID, pause)
 	_ = s.state.RecordOperation(instanceID, Operation{Action: "manual_stop", Success: true, Message: "manual stop submitted; keep-alive paused; mode=" + stopMode, OccurredAt: now})
-	fields := map[string]string{"account": location.Account.Name, "region": location.Region.RegionID, "instance": instanceID, "stop_mode": stopMode}
+	fields := map[string]string{"account": location.Account.Name, "region": location.Region.RegionID, "instance": instanceID, "stop_mode": stopMode, "pause_mode": pauseMode}
+	if pause.ResumeAfterUnix > 0 {
+		fields["resume_after"] = time.Unix(pause.ResumeAfterUnix, 0).In(time.Local).Format("2006-01-02 15:04:05")
+	}
 	if stopMode != configuredStopMode {
 		fields["configured_stop_mode"] = configuredStopMode
 		fields["reason"] = "prepaid_keep_charging"
@@ -503,11 +564,11 @@ func shouldStopForTrafficExceeded(cfg config.Config, snapshot InstanceSnapshot, 
 	}) {
 		return false
 	}
-	if cfg.KeepAlive.StartCooldown > 0 &&
+	if cfg.KeepAlive.OperationCooldown > 0 &&
 		snapshot.LastOperation.Action == "traffic_stop" &&
 		snapshot.LastOperation.Success &&
 		!snapshot.LastOperation.OccurredAt.IsZero() &&
-		now.Sub(snapshot.LastOperation.OccurredAt) < cfg.KeepAlive.StartCooldown {
+		now.Sub(snapshot.LastOperation.OccurredAt) < cfg.KeepAlive.OperationCooldown {
 		return false
 	}
 	return true
@@ -525,9 +586,9 @@ func (s *Service) autoStopForTrafficExceeded(ctx context.Context, client *aliyun
 			"usage":    fmt.Sprintf("%.2f%%", snapshot.AccountUsagePercent),
 			"error":    err.Error(),
 		})
-		fields := trafficStopNotificationFields(snapshot, stopMode, "流量保护关机失败")
+		fields := trafficStopNotificationFields(snapshot, stopMode, "流量超阈值关机失败")
 		fields["错误"] = err.Error()
-		s.notifyEvent(ctx, "error", "流量保护关机失败", fields)
+		s.notifyEvent(ctx, "error", "流量超阈值关机失败", fields)
 		return false
 	}
 	_ = s.state.RecordOperation(snapshot.InstanceID, Operation{Action: "traffic_stop", Success: true, Message: "traffic stop submitted; mode=" + stopMode, OccurredAt: now})
@@ -538,7 +599,7 @@ func (s *Service) autoStopForTrafficExceeded(ctx context.Context, client *aliyun
 		"stop_mode": stopMode,
 		"usage":     fmt.Sprintf("%.2f%%", snapshot.AccountUsagePercent),
 	})
-	s.notifyEvent(ctx, "traffic_stop", "流量保护关机已提交", trafficStopNotificationFields(snapshot, stopMode, "流量保护关机"))
+	s.notifyEvent(ctx, "traffic_stop", "流量超阈值关机已提交", trafficStopNotificationFields(snapshot, stopMode, "流量超阈值关机"))
 	return true
 }
 
@@ -751,6 +812,30 @@ func (s *Service) manualRequiredNotificationAllowed(snapshot InstanceSnapshot, d
 	return allowed
 }
 
+func (s *Service) trafficExceededNotificationAllowed(accountName, scope string) bool {
+	cfg := s.Config()
+	if !cfg.Notification.Enabled || !notifyEventEnabled(cfg.Notification.NotifyEvents, "traffic_exceeded") {
+		return false
+	}
+	allowed, err := s.state.AllowTrafficExceededNotification(accountName, scope, time.Now(), cfg.Notification.TrafficExceededNotifyInterval)
+	if err != nil {
+		applog.Warn("notification", "traffic exceeded notification throttle failed", map[string]string{
+			"account": accountName,
+			"scope":   scope,
+			"error":   err.Error(),
+		})
+		return true
+	}
+	if !allowed {
+		applog.Debug("notification", "traffic exceeded notification suppressed", map[string]string{
+			"account":  accountName,
+			"scope":    scope,
+			"interval": cfg.Notification.TrafficExceededNotifyInterval.String(),
+		})
+	}
+	return allowed
+}
+
 func (s *Service) notifyEvent(parent context.Context, event, title string, fields map[string]string) {
 	cfg := s.Config()
 	if !cfg.Notification.Enabled || !notifyEventEnabled(cfg.Notification.NotifyEvents, event) {
@@ -852,16 +937,15 @@ func instanceNotificationFields(accountName, regionID string, snapshot InstanceS
 }
 
 func manualStopNotificationFields(accountName, regionID string, snapshot InstanceSnapshot, instanceID, stopMode string) map[string]string {
-	fields := instanceNotificationFields(accountName, regionID, snapshot, instanceID, "手工关机已提交")
-	fields["停机模式"] = stopMode
+	fields := instanceNotificationFields(accountName, regionID, snapshot, instanceID, "手工关机")
+	fields["停机模式"] = stopModeText(stopMode)
 	return fields
 }
 
 func trafficStopNotificationFields(snapshot InstanceSnapshot, stopMode, action string) map[string]string {
 	fields := instanceNotificationFields(snapshot.AccountName, snapshot.RegionID, snapshot, snapshot.InstanceID, action)
-	fields["停机模式"] = stopMode
-	fields["流量分区"] = scopeLabelForNotification(snapshot.AccountTrafficScope)
-	fields["使用率"] = fmt.Sprintf("%.2f%%", snapshot.AccountUsagePercent)
+	fields["停机模式"] = stopModeText(stopMode)
+	fields["流量分区"] = fmt.Sprintf("%s使用率：%.2f%%", scopeLabelForNotification(snapshot.AccountTrafficScope), snapshot.AccountUsagePercent)
 	return fields
 }
 
@@ -881,6 +965,17 @@ func scopeLabelForNotification(scope string) string {
 		return "非中国内地"
 	default:
 		return scope
+	}
+}
+
+func stopModeText(mode string) string {
+	switch mode {
+	case aliyun.StoppedModeStopCharging:
+		return "节约关机"
+	case aliyun.StoppedModeKeepCharging:
+		return "普通关机"
+	default:
+		return mode
 	}
 }
 

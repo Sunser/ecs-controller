@@ -126,12 +126,13 @@ func (s *Server) handleInstanceAction(w http.ResponseWriter, r *http.Request) {
 		err = s.service.ManualStart(ctx, instanceID)
 	case "stop":
 		var request struct {
-			StopMode string `json:"stop_mode"`
+			StopMode  string `json:"stop_mode"`
+			PauseMode string `json:"pause_mode"`
 		}
 		if r.Body != nil {
 			_ = json.NewDecoder(r.Body).Decode(&request)
 		}
-		err = s.service.ManualStop(ctx, instanceID, request.StopMode)
+		err = s.service.ManualStop(ctx, instanceID, request.StopMode, request.PauseMode)
 	default:
 		http.NotFound(w, r)
 		return
